@@ -7,6 +7,7 @@ import pytest
 from openpyxl import load_workbook
 from sqlalchemy import text
 from app.db import db
+from test_financial_integration import _excel_import_file
 from test_template_0916 import current_import_file, workbook_bytes
 from test_import_permissions import _create_user, _login
 
@@ -27,6 +28,50 @@ def source_file():
     ws['C4'] = '第二部门'
     ws['I4'] = '第二团队'
     return workbook_bytes(wb)
+
+
+def transitional_91_source_file():
+    """Build the observed 2024 layout without using any business workbook data."""
+    wb = load_workbook(BytesIO(_excel_import_file()))
+    ws = wb.active
+    ws.delete_cols(25)
+    ws.delete_cols(87)
+    ws.insert_cols(87, 2)
+    ws.cell(2, 87, '交付应收款')
+    ws.cell(2, 88, '开票应收款')
+    ws.cell(3, 87, Decimal('999999'))
+    ws.cell(3, 88, Decimal('888888'))
+    assert ws.max_column == 91
+    return workbook_bytes(wb)
+
+
+def test_transitional_91_source_import_maps_columns_without_financial_shift(client, headers):
+    content = transitional_91_source_file()
+    preview = client.post('/api/orders/source-import?filename=2024.xlsx', content=content, headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['layout'] == '过渡版台账'
+    with db() as conn:
+        assert conn.execute(text('SELECT COUNT(*) FROM order_line')).scalar_one() == 0
+
+    imported = client.post(
+        '/api/orders/source-import?filename=2024.xlsx&preview=false',
+        content=content,
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.text
+    with db() as conn:
+        row = conn.execute(text(
+            'SELECT v.order_value,v.purchase_unit_price_no_tax,v.purchase_unit_price,'
+            'v.purchase_amount,p.purchase_tax_rate,p.labor_cost,p.other_cost '
+            'FROM v_order_line_finance v JOIN purchase_info p ON p.order_line_id=v.order_line_id'
+        )).mappings().one()
+    assert row['order_value'] == Decimal('226.00')
+    assert row['purchase_tax_rate'] is None
+    assert row['purchase_unit_price_no_tax'] == Decimal('70.000000')
+    assert row['purchase_unit_price'] == Decimal('79.100000')
+    assert row['purchase_amount'] == Decimal('158.20')
+    assert row['labor_cost'] == Decimal('12.34')
+    assert row['other_cost'] == Decimal('5.67')
 
 
 def test_source_rows_preview_commit_and_duplicate_file(client, headers):

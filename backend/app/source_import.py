@@ -15,12 +15,52 @@ from openpyxl import load_workbook
 from sqlalchemy import text
 
 from .importer import import_excel, validate_template_numbers
-from .ledger_excel import standard_template_version, normalize_standard_row, TEMPLATE_HEADERS
+from .ledger_excel import (
+    LEGACY_TEMPLATE_HEADERS,
+    TEMPLATE_HEADERS,
+    normalize_standard_row,
+    standard_template_version,
+)
 from .legacy_ledger_parser import parse_date_sequence, parse_amount_sequence, parse_document_sequence
 from .legacy_import_service import FINANCE_SOURCES, PHASE_TABLE_COLUMNS
 from .validation import validate_business_date
 from .financial_calculations import refresh_balances
 from .edit_versions import touch_line
+
+
+TRANSITIONAL_91_HEADERS = (
+    LEGACY_TEMPLATE_HEADERS[:24]
+    + LEGACY_TEMPLATE_HEADERS[25:87]
+    + TEMPLATE_HEADERS[87:92]
+)
+
+
+def source_template_layout(headers):
+    names = [str(value or '').strip() for value in headers]
+    while names and not names[-1]:
+        names.pop()
+    version = standard_template_version(names)
+    if version:
+        return version
+    if names == TRANSITIONAL_91_HEADERS:
+        return 'transitional_91'
+    return None
+
+
+def normalize_source_row(values, layout):
+    if layout != 'transitional_91':
+        return normalize_standard_row(values, layout)
+    row = list(values[:91]) + [None] * max(0, 91 - len(values))
+    row.insert(24, None)
+    return row
+
+
+def source_column(layout, standard_column):
+    if layout != 'transitional_91':
+        return standard_column
+    if standard_column == 25:
+        return None
+    return standard_column if standard_column < 25 else standard_column - 1
 
 
 def source_text(value):
@@ -53,11 +93,11 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
     if existing:
         raise HTTPException(409, f"这份文件已经导入（批次 {existing['id']}，{existing['success_rows']} 行），未重复写入")
     wb = load_workbook(BytesIO(content), data_only=True)
-    candidates = [s for s in wb if standard_template_version([c.value for c in s[2]])]
+    candidates = [s for s in wb if source_template_layout([c.value for c in s[2]])]
     if len(candidates) != 1:
         raise ValueError('请使用包含唯一业务工作表的 0916 新版92列或原版91列模板')
     ws = candidates[0]
-    version = standard_template_version([c.value for c in ws[2]])
+    version = source_template_layout([c.value for c in ws[2]])
     originals, records, warnings = {}, {}, []
     groups = dict(FINANCE_SOURCES)
     groups['finance_payment_entry'] = groups.pop('finance_invoice_check')
@@ -69,12 +109,13 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
             continue
         if len(originals) >= 20000:
             raise ValueError('单次最多20,000行')
-        row = normalize_standard_row(values, version)
+        row = normalize_source_row(values, version)
         if not row[1] or not row[12] or not row[14]:
             raise ValueError(f'第 {row_no} 行缺少项目编号、销售订单号或物资/服务名称')
         originals[row_no] = row[:]
         for col in (19,25):
-            if cells[col-1].data_type == 'e':
+            original_col = source_column(version, col)
+            if original_col and cells[original_col-1].data_type == 'e':
                 warnings.append({'row':row_no,'field':TEMPLATE_HEADERS[col-1],'message':f'原表税率公式为 {row[col-1]}，保留原始值，税率留空，不影响已填金额'})
                 row[col-1] = None
         records[row_no] = {}
@@ -165,4 +206,5 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         refresh_balances(conn, line_id)
     conn.execute(text('UPDATE import_batch SET source_sha256=:sha WHERE id=:id'), {'sha':digest,'id':result['batch_id']})
     return {**result,'source_sha256':digest,'warnings':warnings,'phase_counts':dict(written),'source_preserved':True,
-            'layout':'0916 新版' if version == 92 else '原版台账','summary':summary(conn,result['batch_id']), 'duplicates':duplicates}
+            'layout':{'transitional_91':'过渡版台账',92:'0916 新版',91:'原版台账'}[version],
+            'summary':summary(conn,result['batch_id']), 'duplicates':duplicates}

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BACKEND_DIR = ROOT_DIR / "backend"
-DOCS_DIR = ROOT_DIR / "docs"
+DOCS_DIR = Path(os.getenv("IMPORT_DIR") or (ROOT_DIR / "docs")).resolve()
 
 load_dotenv(BACKEND_DIR / ".env")
 

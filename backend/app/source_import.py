@@ -33,6 +33,7 @@ TRANSITIONAL_91_HEADERS = (
     + LEGACY_TEMPLATE_HEADERS[25:87]
     + TEMPLATE_HEADERS[87:92]
 )
+TRANSITIONAL_92_HEADERS = LEGACY_TEMPLATE_HEADERS[:87] + TEMPLATE_HEADERS[87:92]
 
 
 def source_template_layout(headers):
@@ -44,15 +45,19 @@ def source_template_layout(headers):
         return version
     if names == TRANSITIONAL_91_HEADERS:
         return 'transitional_91'
+    if names == TRANSITIONAL_92_HEADERS:
+        return 'transitional_92'
     return None
 
 
 def normalize_source_row(values, layout):
-    if layout != 'transitional_91':
-        return normalize_standard_row(values, layout)
-    row = list(values[:91]) + [None] * max(0, 91 - len(values))
-    row.insert(24, None)
-    return row
+    if layout == 'transitional_91':
+        row = list(values[:91]) + [None] * max(0, 91 - len(values))
+        row.insert(24, None)
+        return row
+    if layout == 'transitional_92':
+        return list(values[:92]) + [None] * max(0, 92 - len(values))
+    return normalize_standard_row(values, layout)
 
 
 def source_column(layout, standard_column):
@@ -206,5 +211,10 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         refresh_balances(conn, line_id)
     conn.execute(text('UPDATE import_batch SET source_sha256=:sha WHERE id=:id'), {'sha':digest,'id':result['batch_id']})
     return {**result,'source_sha256':digest,'warnings':warnings,'phase_counts':dict(written),'source_preserved':True,
-            'layout':{'transitional_91':'过渡版台账',92:'0916 新版',91:'原版台账'}[version],
+            'layout':{
+                'transitional_91':'过渡版台账',
+                'transitional_92':'过渡版台账（含采购税率）',
+                92:'0916 新版',
+                91:'原版台账',
+            }[version],
             'summary':summary(conn,result['batch_id']), 'duplicates':duplicates}

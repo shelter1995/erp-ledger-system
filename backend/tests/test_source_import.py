@@ -45,6 +45,20 @@ def transitional_91_source_file():
     return workbook_bytes(wb)
 
 
+def transitional_92_source_file():
+    """Build the observed post-Y-column layout without using business data."""
+    wb = load_workbook(BytesIO(_excel_import_file()))
+    ws = wb.active
+    ws.delete_cols(88)
+    ws.insert_cols(88, 2)
+    ws.cell(2, 88, '交付应收款')
+    ws.cell(2, 89, '开票应收款')
+    ws.cell(3, 88, Decimal('999999'))
+    ws.cell(3, 89, Decimal('888888'))
+    assert ws.max_column == 92
+    return workbook_bytes(wb)
+
+
 def test_transitional_91_source_import_maps_columns_without_financial_shift(client, headers):
     content = transitional_91_source_file()
     preview = client.post('/api/orders/source-import?filename=2024.xlsx', content=content, headers=headers)
@@ -67,6 +81,33 @@ def test_transitional_91_source_import_maps_columns_without_financial_shift(clie
         )).mappings().one()
     assert row['order_value'] == Decimal('226.00')
     assert row['purchase_tax_rate'] is None
+    assert row['purchase_unit_price_no_tax'] == Decimal('70.000000')
+    assert row['purchase_unit_price'] == Decimal('79.100000')
+    assert row['purchase_amount'] == Decimal('158.20')
+    assert row['labor_cost'] == Decimal('12.34')
+    assert row['other_cost'] == Decimal('5.67')
+
+
+def test_transitional_92_source_import_preserves_purchase_tax_and_financial_columns(client, headers):
+    content = transitional_92_source_file()
+    preview = client.post('/api/orders/source-import?filename=after-y.xlsx', content=content, headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['layout'] == '过渡版台账（含采购税率）'
+
+    imported = client.post(
+        '/api/orders/source-import?filename=after-y.xlsx&preview=false',
+        content=content,
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.text
+    with db() as conn:
+        row = conn.execute(text(
+            'SELECT v.order_value,v.purchase_unit_price_no_tax,v.purchase_unit_price,'
+            'v.purchase_amount,p.purchase_tax_rate,p.labor_cost,p.other_cost '
+            'FROM v_order_line_finance v JOIN purchase_info p ON p.order_line_id=v.order_line_id'
+        )).mappings().one()
+    assert row['order_value'] == Decimal('226.00')
+    assert row['purchase_tax_rate'] == Decimal('13.000000')
     assert row['purchase_unit_price_no_tax'] == Decimal('70.000000')
     assert row['purchase_unit_price'] == Decimal('79.100000')
     assert row['purchase_amount'] == Decimal('158.20')

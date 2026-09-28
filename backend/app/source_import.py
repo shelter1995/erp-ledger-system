@@ -26,6 +26,7 @@ from .legacy_import_service import FINANCE_SOURCES, PHASE_TABLE_COLUMNS
 from .validation import validate_business_date
 from .financial_calculations import refresh_balances
 from .edit_versions import touch_line
+from .historical_project_identity import resolve_project_code
 
 
 TRANSITIONAL_91_HEADERS = (
@@ -108,6 +109,8 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
     groups['finance_payment_entry'] = groups.pop('finance_invoice_check')
     # Sales document number and invoice number are separate source columns.
     groups['sales_invoice'] = ((74, 76, 75),)
+    prepared_rows = []
+    order_groups = {}
     for row_no, cells in enumerate(ws.iter_rows(min_row=3), 3):
         values = [c.value for c in cells]
         if not any(v not in (None, '') for v in values):
@@ -115,9 +118,54 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         if len(originals) >= 20000:
             raise ValueError('单次最多20,000行')
         row = normalize_source_row(values, version)
-        if not row[1] or not row[12] or not row[14]:
-            raise ValueError(f'第 {row_no} 行缺少项目编号、销售订单号或物资/服务名称')
+        if not row[12] or not row[14]:
+            raise ValueError(f'第 {row_no} 行缺少销售订单号或物资/服务名称')
         originals[row_no] = row[:]
+        order_no = str(row[12]).strip()
+        prepared_rows.append((row_no, cells, row))
+        order_groups.setdefault(order_no, []).append((row_no, row))
+
+    reserved_codes = set()
+    effective_codes = {}
+    for order_no, grouped_rows in order_groups.items():
+        official_codes = {str(row[1]).strip() for _, row in grouped_rows if str(row[1] or '').strip()}
+        if len(official_codes) > 1:
+            blank_rows = [row_no for row_no, row in grouped_rows if not str(row[1] or '').strip()]
+            if blank_rows:
+                raise ValueError(
+                    f'订单号 {order_no} 在同一文件中填写了多个项目编号，'
+                    f'第 {blank_rows[0]} 行 B 列为空，无法判断应归入哪个项目'
+                )
+            for official_code in sorted(official_codes):
+                official_rows = [(row_no, row) for row_no, row in grouped_rows
+                                 if str(row[1]).strip() == official_code]
+                first_row_no, first_row = official_rows[0]
+                resolution = resolve_project_code(
+                    conn,
+                    project_code=official_code,
+                    order_no=order_no,
+                    first_goods_name=first_row[14],
+                    reserved_codes=reserved_codes,
+                    reconcile_temporary=False,
+                )
+                for row_no, _ in official_rows:
+                    effective_codes[row_no] = resolution.project_code
+            continue
+        first_row_no, first_row = grouped_rows[0]
+        resolution = resolve_project_code(
+            conn,
+            project_code=next(iter(official_codes), None),
+            order_no=order_no,
+            first_goods_name=first_row[14],
+            reserved_codes=reserved_codes,
+        )
+        for row_no, _ in grouped_rows:
+            effective_codes[row_no] = resolution.project_code
+        if resolution.message:
+            warnings.append({'row':first_row_no, 'field':'项目编号', 'message':resolution.message})
+
+    for row_no, cells, row in prepared_rows:
+        row[1] = effective_codes[row_no]
         for col in (19,25):
             original_col = source_column(version, col)
             if original_col and cells[original_col-1].data_type == 'e':

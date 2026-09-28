@@ -1,5 +1,6 @@
 from io import BytesIO
 from decimal import Decimal
+import json
 import os
 from pathlib import Path
 
@@ -27,6 +28,21 @@ def source_file():
     ws['E4'] = '乙'
     ws['C4'] = '第二部门'
     ws['I4'] = '第二团队'
+    return workbook_bytes(wb)
+
+
+def source_file_with_identities(rows):
+    """Build source rows without using any business workbook data."""
+    wb = load_workbook(BytesIO(current_import_file()))
+    ws = wb.active
+    template = [cell.value for cell in ws[3]]
+    for index, (project_code, order_no, goods_name) in enumerate(rows, 3):
+        if index > 3:
+            ws.append(template)
+        ws.cell(index, 2).value = project_code
+        ws.cell(index, 13).value = order_no
+        ws.cell(index, 15).value = goods_name
+        ws.cell(index, 16).value = f'规格-{index}'
     return workbook_bytes(wb)
 
 
@@ -151,6 +167,153 @@ def test_source_rows_preview_commit_and_duplicate_file(client, headers):
     assert Decimal(ledger.json()['items'][0]['order_amount']) == lines[1]['order_value']
     assert ledger.json()['items'][0]['account_manager'] == '乙'
     assert client.get(f"/api/history/lines/{lines[0]['order_line_id']}",headers=scoped).status_code == 403
+
+
+def test_blank_project_code_groups_by_order_and_preserves_original_cell(client, headers):
+    content = source_file_with_identities([
+        (None, 'SO-HISTORY-001', '核心交换机'),
+        (None, 'SO-HISTORY-001', '配套模块'),
+    ])
+    preview = client.post('/api/orders/source-import?filename=history.xlsx', content=content, headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert any('SO-HISTORY-001' in warning['message'] and '临时待补-' in warning['message']
+               for warning in preview.json()['warnings'])
+
+    imported = client.post(
+        '/api/orders/source-import?filename=history.xlsx&preview=false',
+        content=content,
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.text
+    with db() as conn:
+        projects = conn.execute(text('SELECT project_code FROM project WHERE deleted_at IS NULL')).scalars().all()
+        assert len(projects) == 1
+        assert projects[0].startswith('临时待补-核心交换机等项目-')
+        assert len(projects[0]) <= 64
+        assert conn.execute(text('SELECT COUNT(*) FROM sales_order')).scalar_one() == 1
+        assert conn.execute(text('SELECT COUNT(*) FROM order_line')).scalar_one() == 2
+        raw_rows = conn.execute(text('SELECT raw_json FROM ledger_raw_row ORDER BY excel_row_no')).scalars().all()
+    for raw in raw_rows:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        assert payload['values'][1] is None
+
+
+def test_blank_project_code_does_not_merge_same_first_goods_across_orders(client, headers):
+    content = source_file_with_identities([
+        (None, 'SO-HISTORY-A', '通用设备'),
+        (None, 'SO-HISTORY-B', '通用设备'),
+    ])
+    imported = client.post(
+        '/api/orders/source-import?filename=two-orders.xlsx&preview=false',
+        content=content,
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.text
+    with db() as conn:
+        codes = conn.execute(text('SELECT project_code FROM project ORDER BY project_code')).scalars().all()
+    assert len(codes) == 2
+    assert all(code.startswith('临时待补-通用设备等项目-') for code in codes)
+    assert len(set(codes)) == 2
+
+
+def test_blank_project_code_rejects_order_number_owned_by_multiple_projects(client, headers):
+    with db() as conn:
+        for code in ('P-AMBIGUOUS-1', 'P-AMBIGUOUS-2'):
+            project_id = conn.execute(
+                text('INSERT INTO project (project_code) VALUES (:code)'), {'code': code}
+            ).lastrowid
+            conn.execute(
+                text('INSERT INTO sales_order (project_id,order_no) VALUES (:project_id,:order_no)'),
+                {'project_id': project_id, 'order_no': 'SO-AMBIGUOUS'},
+            )
+    content = source_file_with_identities([(None, 'SO-AMBIGUOUS', '设备')])
+    response = client.post('/api/orders/source-import?filename=ambiguous.xlsx', content=content, headers=headers)
+    assert response.status_code == 422, response.text
+    assert 'SO-AMBIGUOUS' in response.text and '多个项目' in response.text
+
+
+def test_later_official_code_renames_single_temporary_project(client, headers):
+    historical = source_file_with_identities([(None, 'SO-UPGRADE', '历史设备')])
+    first = client.post(
+        '/api/orders/source-import?filename=historical.xlsx&preview=false',
+        content=historical,
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+
+    official = source_file_with_identities([('P-OFFICIAL', 'SO-UPGRADE', '追加设备')])
+    second = client.post(
+        '/api/orders/source-import?filename=official.xlsx&preview=false',
+        content=official,
+        headers=headers,
+    )
+    assert second.status_code == 200, second.text
+    with db() as conn:
+        assert conn.execute(text('SELECT project_code FROM project')).scalars().all() == ['P-OFFICIAL']
+        assert conn.execute(text('SELECT COUNT(*) FROM sales_order')).scalar_one() == 1
+        assert conn.execute(text('SELECT COUNT(*) FROM order_line')).scalar_one() == 2
+
+
+def test_later_official_code_merges_safe_single_order_temporary_project(client, headers):
+    official = source_file_with_identities([('P-OFFICIAL', 'SO-OTHER', '正式项目设备')])
+    historical = source_file_with_identities([(None, 'SO-MERGE', '历史设备')])
+    assert client.post(
+        '/api/orders/source-import?filename=official-base.xlsx&preview=false',
+        content=official,
+        headers=headers,
+    ).status_code == 200
+    assert client.post(
+        '/api/orders/source-import?filename=historical-base.xlsx&preview=false',
+        content=historical,
+        headers=headers,
+    ).status_code == 200
+
+    reconciliation = source_file_with_identities([('P-OFFICIAL', 'SO-MERGE', '追加设备')])
+    response = client.post(
+        '/api/orders/source-import?filename=reconcile.xlsx&preview=false',
+        content=reconciliation,
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    with db() as conn:
+        assert conn.execute(text('SELECT project_code FROM project')).scalars().all() == ['P-OFFICIAL']
+        assert conn.execute(text('SELECT COUNT(*) FROM sales_order')).scalar_one() == 2
+        assert conn.execute(text('SELECT COUNT(*) FROM order_line')).scalar_one() == 3
+
+
+def test_explicit_project_codes_keep_same_order_number_in_separate_projects(client, headers):
+    first = source_file_with_identities([('P-FRAMEWORK-1', 'SO-REUSED', '设备一')])
+    second = source_file_with_identities([('P-FRAMEWORK-2', 'SO-REUSED', '设备二')])
+    assert client.post(
+        '/api/orders/source-import?filename=framework-1.xlsx&preview=false',
+        content=first,
+        headers=headers,
+    ).status_code == 200
+    response = client.post(
+        '/api/orders/source-import?filename=framework-2.xlsx&preview=false',
+        content=second,
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    with db() as conn:
+        assert conn.execute(text('SELECT COUNT(*) FROM project')).scalar_one() == 2
+        assert conn.execute(text('SELECT COUNT(*) FROM sales_order')).scalar_one() == 2
+
+
+def test_same_file_keeps_reused_order_number_under_explicit_projects(client, headers):
+    content = source_file_with_identities([
+        ('P-FRAMEWORK-1', 'SO-REUSED', '设备一'),
+        ('P-FRAMEWORK-2', 'SO-REUSED', '设备二'),
+    ])
+    response = client.post(
+        '/api/orders/source-import?filename=two-frameworks.xlsx&preview=false',
+        content=content,
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    with db() as conn:
+        assert conn.execute(text('SELECT COUNT(*) FROM project')).scalar_one() == 2
+        assert conn.execute(text('SELECT COUNT(*) FROM sales_order')).scalar_one() == 2
 
 
 @pytest.mark.skipif(not os.environ.get('REAL_SOURCE_WORKBOOK'), reason='local acceptance workbook not configured')

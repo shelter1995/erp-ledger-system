@@ -172,14 +172,28 @@ def decode_access_token(token: str) -> dict:
 
 
 def migrate_ledger_import_permission(conn) -> None:
-    """给原本已有 system_admin 的账号补上 ledger_import（可重复运行）。
+    """首次升级时给原有 system_admin 账号补上 ledger_import。
 
     只处理显式权限 JSON 的账号：
     - 含 system_admin 且缺 ledger_import → 追加；
     - 普通账号不隐式获权；
     - permissions_json 为空（NULL）表示继承角色默认，保持不动，admin 角色本身已含新权限；
     - 显式空数组 "[]" 保持为空，不改成继承角色默认。
+
+    schema_migration 的唯一键让这项兼容迁移在每个数据库只执行一次；迁移标记与
+    权限更新位于同一事务，失败时一并回滚。迁移完成后的人工撤权不会被重启覆盖。
     """
+    marker = conn.execute(
+        text(
+            """
+            INSERT IGNORE INTO schema_migration (migration_key)
+            VALUES ('20260916_add_ledger_import_permission')
+            """
+        )
+    )
+    if marker.rowcount == 0:
+        return
+
     rows = conn.execute(text("SELECT id, permissions_json FROM erp_user")).mappings().all()
     for row in rows:
         stored = row["permissions_json"]

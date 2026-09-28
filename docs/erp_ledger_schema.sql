@@ -717,6 +717,11 @@ GROUP BY v.project_code, v.order_no, v.department, v.branch_company, v.account_m
 CREATE TABLE IF NOT EXISTS business_state (id INT PRIMARY KEY, data_epoch BIGINT NOT NULL DEFAULT 1) ENGINE=InnoDB;
 INSERT IGNORE INTO business_state (id,data_epoch) VALUES (1,1);
 
+CREATE TABLE IF NOT EXISTS schema_migration (
+  migration_key VARCHAR(191) NOT NULL PRIMARY KEY,
+  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE IF NOT EXISTS legacy_import_audit_source (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
  session_id VARCHAR(64) NOT NULL,

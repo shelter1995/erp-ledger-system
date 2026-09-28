@@ -305,7 +305,9 @@ def test_legal_addition_to_existing_project_succeeds(client: TestClient, headers
 # --- 迁移 -------------------------------------------------------------------
 
 
-def test_legacy_permission_migration_only_extends_existing_admins(cleanup_users) -> None:
+def test_legacy_permission_migration_only_extends_existing_admins(
+    mysql_test_database, cleanup_users
+) -> None:
     """只有原本已带 system_admin 的账号追加 ledger_import；其余原样保留。"""
     legacy = {
         "legacy_admin": json.dumps(["order_entry", "system_admin"], ensure_ascii=False),
@@ -314,6 +316,12 @@ def test_legacy_permission_migration_only_extends_existing_admins(cleanup_users)
         "legacy_null": None,
     }
     with db() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM schema_migration "
+                "WHERE migration_key = '20260916_add_ledger_import_permission'"
+            )
+        )
         for username, permissions in legacy.items():
             cleanup_users.append(username)
             conn.execute(
@@ -371,9 +379,43 @@ def test_user_list_reports_effective_permissions_for_legacy_account(
     assert "ledger_import" in item["effective_permissions"]
 
 
-def test_permission_migration_is_repeatable(cleanup_users) -> None:
+def test_applied_permission_migration_preserves_later_import_revocation(
+    mysql_test_database, cleanup_users
+) -> None:
+    """迁移完成后，显式撤销 ledger_import 必须在后续启动中保持有效。"""
+    cleanup_users.append("admin_without_import")
+    with db() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO erp_user
+                  (username, password_hash, display_name, role_code, permissions_json,
+                   department_scope_json, department_can_view, department_can_entry, is_active)
+                VALUES ('admin_without_import', 'unused', 'admin_without_import', 'viewer',
+                        '["system_admin"]', '[]', 0, 0, 1)
+                """
+            )
+        )
+        migrate_ledger_import_permission(conn)
+        permissions = json.loads(
+            conn.execute(
+                text("SELECT permissions_json FROM erp_user WHERE username = 'admin_without_import'")
+            ).scalar()
+        )
+
+    assert "system_admin" in permissions
+    assert "ledger_import" not in permissions
+
+
+def test_permission_migration_is_repeatable(mysql_test_database, cleanup_users) -> None:
     cleanup_users.append("legacy_repeat")
     with db() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM schema_migration "
+                "WHERE migration_key = '20260916_add_ledger_import_permission'"
+            )
+        )
         conn.execute(
             text(
                 """

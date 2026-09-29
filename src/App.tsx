@@ -64,6 +64,7 @@ function mapLedger(item: BackendProjectLedger): ProjectLedger {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     deliveryValue: rawAmount(item.delivery_value),
     deliveryCost: rawAmount(item.delivery_cost),
@@ -76,6 +77,7 @@ function mapLedger(item: BackendProjectLedger): ProjectLedger {
     clientUnit: item.customer_unit_name || fallbackText,
     projectName: item.project_name || fallbackText,
     orderAmount: rawAmount(item.order_amount),
+    grossProfit: optionalAmount(item.gross_profit),
     purchaseAmount: rawAmount(item.purchase_amount),
     totalReceived: rawAmount(item.total_received),
     department: item.department || fallbackText,
@@ -90,6 +92,7 @@ function mapOrder(item: BackendOrderRecord): OrderRecord {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     orderLineId: item.order_line_id,
     amountType: item.amount_type || '',
@@ -109,6 +112,8 @@ function mapOrder(item: BackendOrderRecord): OrderRecord {
     accountsReceivable: optionalAmount(item.accounts_receivable),
     accountsPayable: optionalAmount(item.accounts_payable),
     grossProfit: optionalAmount(item.gross_profit),
+    taxAmount: optionalAmount(item.tax_difference),
+    taxRefund: optionalAmount(item.tax_refund),
     statisticalCategory: item.statistical_category || '',
     teamName: item.team_name || '',
     goodsName: item.goods_name || fallbackText,
@@ -150,6 +155,7 @@ function mapPurchase(item: BackendPurchaseRecord): PurchaseRecord {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     orderLineId: item.order_line_id,
     projectId: item.project_code,
@@ -170,6 +176,7 @@ function mapSale(item: BackendSalesRecord): SalesRecord {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     orderLineId: item.order_line_id,
     projectId: item.project_code,

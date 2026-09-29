@@ -266,4 +266,14 @@ assert.equal(
   '2026-02-02 12:34:56',
 );
 
+const preciseProfitOrders = [
+  { ...orders[0], orderDate: '2026-01-02', grossProfit: '55.003' },
+  { ...orders[0], orderDate: '2026-01-03', grossProfit: '55.003' },
+];
+assert.equal(getDashboardMetrics({ ledgers: [], orders: preciseProfitOrders, department: '' }).grossProfit, '110.01');
+assert.equal(dashboardMetrics.getDashboardTrendData(preciseProfitOrders, { department: '' })[0].profit, '110.01');
+assert.equal(getDashboardMetrics({ ledgers: [], orders: [
+  { ...orders[0], orderValue: '100', purchaseAmount: '40', taxAmount: '8', taxRefund: '3', grossProfit: undefined },
+], department: '' }).grossProfit, '55.00');
+
 console.log('dashboard metrics tests passed');

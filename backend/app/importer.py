@@ -24,6 +24,7 @@ from .ledger_history import (
 from .legacy_ledger_parser import parse_name_sequence
 from .line_identity import find_duplicate_line
 from .financial_calculations import refresh_line
+from .profit_calculations import profit_inputs_from_archive
 from .ledger_excel import SAMPLE_ORDER_NO, SAMPLE_PROJECT_CODE, TEMPLATE_HEADERS, is_template_sample_row, standard_template_version
 from .validation import validate_business_date, Money, PreciseNumber
 from pydantic import TypeAdapter, ValidationError
@@ -568,6 +569,8 @@ def import_excel(
             sub_project_id, sub_project_conflicts = _find_or_create_sub_project(
                 conn, sales_order_id, row, position, project_name, excel_row_no
             )
+            if preserve_source:
+                sub_project_conflicts = [issue for issue in sub_project_conflicts if not issue.startswith(('区域平台（', '客户单位（', '最终用户（'))]
             if sub_project_conflicts:
                 raise ValueError(
                     f"第 {excel_row_no} 行订单 {order_no} 的子项目“{project_name or '（空名称）'}”已在台账中，"
@@ -605,6 +608,7 @@ def import_excel(
                     "同名同规格同数量同单价同采购厂商的明细已存在"
                 )
 
+            profit_inputs = profit_inputs_from_archive(raw_json, source_preserved=preserve_source)
             order_line_id = _execute_scalar(
                 conn,
                 """
@@ -612,13 +616,17 @@ def import_excel(
                   (sales_order_id, sub_project_id, raw_row_id, source_excel_row_no, project_name,
                    goods_name, specification_model, unit_name, quantity, sales_tax_rate,
                    sales_unit_price_no_tax, sales_unit_price, revenue_no_tax, order_value,
-                   source_preserved, line_department, line_branch_company,
+                   source_gross_profit, line_regional_platform, line_customer_unit_name, line_end_user_name,
+                   source_preserved, line_order_date, line_order_date_initialized, line_department, line_branch_company,
+                   source_order_value_precise, source_purchase_amount_precise, profit_tax_amount, profit_tax_refund, profit_inputs_initialized,
                    line_account_manager, line_team_level3_name)
                 VALUES
                   (:sales_order_id, :sub_project_id, :raw_row_id, :excel_row_no, :project_name,
                    :goods_name, :specification_model, :unit_name, :quantity, :sales_tax_rate,
                    :sales_unit_price_no_tax, :sales_unit_price, :revenue_no_tax, :order_value,
-                   :source_preserved, :line_department, :line_branch_company,
+                   :source_gross_profit, :line_regional_platform, :line_customer_unit_name, :line_end_user_name,
+                   :source_preserved, :line_order_date, :line_order_date_initialized, :line_department, :line_branch_company,
+                   :source_order_value_precise, :source_purchase_amount_precise, :profit_tax_amount, :profit_tax_refund, :profit_inputs_initialized,
                    :line_account_manager, :line_team_level3_name)
                 """,
                 {
@@ -636,7 +644,16 @@ def import_excel(
                     "sales_unit_price": sales_unit_price,
                     "revenue_no_tax": revenue_no_tax,
                     "order_value": order_value,
+                    **profit_inputs,
+                    "source_gross_profit": (
+                        _as_decimal(_row_value(row, 66)) if preserve_source else None
+                    ),
+                    "line_customer_unit_name": _as_text(_row_value(row, 10)) if preserve_source else None,
+                    "line_end_user_name": _as_text(_row_value(row, 11)) if preserve_source else None,
+                    "line_regional_platform": _as_text(_row_value(row, 12)) if preserve_source else None,
                     "source_preserved": int(preserve_source),
+                    "line_order_date": _as_date(_row_value(row, position(6, 6))) if preserve_source else None,
+                    "line_order_date_initialized": int(preserve_source),
                     "line_department": department if preserve_source else None,
                     "line_branch_company": _as_text(row[3]) if preserve_source else None,
                     "line_account_manager": _as_text(row[4]) if preserve_source else None,

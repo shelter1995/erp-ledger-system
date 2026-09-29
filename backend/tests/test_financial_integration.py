@@ -225,7 +225,7 @@ def test_orders_list_includes_the_latest_data_modification_time(
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
     assert item["last_modified_at"]
-    assert _d(item["gross_profit"]) == Decimal("339.00")
+    assert _d(item["gross_profit"]) == Decimal("300.00")
     assert _d(item["accounts_receivable"]) == Decimal("1130.00")
     assert _d(item["accounts_payable"]) == Decimal("791.00")
 
@@ -1758,7 +1758,7 @@ def test_normal_financial_cases(case: str, client: TestClient, headers: dict[str
     if case == "N-01":
         finance = _finance(order_line_id)
         assert _d(finance["gross_profit_no_tax"]) == Decimal("300.00")
-        assert _d(finance["gross_profit"]) == Decimal("339.00")
+        assert _d(finance["gross_profit"]) == Decimal("300.00")
         assert _d(finance["accounts_receivable"]) == Decimal("1130.00")
         assert _d(finance["accounts_payable"]) == Decimal("791.00")
         assert _count("project") == _count("sales_order") == _count("order_line") == 1
@@ -1766,7 +1766,7 @@ def test_normal_financial_cases(case: str, client: TestClient, headers: dict[str
         assert _count("delivery_record", "order_line_id = :id", id=order_line_id) == 1
         assert _d(_ledger(payload["project_code"])["order_amount"]) == Decimal("1130.00")
         assert _dashboard(client, headers) == {
-            "orderAmount": "1130.00", "grossProfit": "339.00", "orderCount": 1,
+            "orderAmount": "1130.00", "grossProfit": "300.00", "orderCount": 1,
             "accountsReceivable": "1130.00", "accountsPayable": "791.00", "closedCount": 0,
             "deliveryAccountsReceivable": "565.00", "invoiceAccountsReceivable": "0.00",
         }

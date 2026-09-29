@@ -97,7 +97,7 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
     {
       label: '毛利润',
       value: compactMoney(dashboardMetrics.grossProfit),
-      description: '销售订单金额减采购金额',
+      description: '订单金额－采购金额－税金＋退税',
       icon: TrendingUp,
       iconClass: 'bg-emerald-50 text-emerald-700',
       accentClass: 'border-t-emerald-600',

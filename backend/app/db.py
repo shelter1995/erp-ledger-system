@@ -49,6 +49,7 @@ def initialize_schema() -> None:
 
 
 def apply_runtime_migrations() -> None:
+    from .profit_calculations import PROFIT_COLUMNS, backfill_profit_inputs
     phase_tables = [
         "purchase_invoice",
         "warehouse_entry",
@@ -68,17 +69,25 @@ def apply_runtime_migrations() -> None:
         if ratio_precision is not None and int(ratio_precision) < 30:
             conn.execute(text("ALTER TABLE sales_receipt MODIFY COLUMN receipt_ratio DECIMAL(30,6) NULL"))
         project_name_column_added = False
+        line_identity_columns_added = []
         additional_columns = {
             "project": {"version": "BIGINT NOT NULL DEFAULT 1"},
             "import_batch": {"source_sha256": "CHAR(64) NULL", "review_json": "JSON NULL", "baseline_sha256": "CHAR(64) NULL", "pre_import_backup_id": "BIGINT UNSIGNED NULL"},
             "order_line": {
+                **PROFIT_COLUMNS,
                 "source_preserved": "TINYINT NOT NULL DEFAULT 0",
+                "line_order_date": "DATE NULL",
+                "line_order_date_initialized": "TINYINT NOT NULL DEFAULT 0",
                 "line_department": "VARCHAR(64) NULL",
                 "line_branch_company": "VARCHAR(128) NULL",
                 "line_account_manager": "VARCHAR(255) NULL",
                 "line_team_level3_name": "VARCHAR(128) NULL",
                 "project_name": "VARCHAR(255) NULL",
                 "sales_tax_rate": "DECIMAL(10,6) NULL",
+                "source_gross_profit": "DECIMAL(18,2) NULL",
+                "line_regional_platform": "VARCHAR(128) NULL",
+                "line_customer_unit_name": "VARCHAR(255) NULL",
+                "line_end_user_name": "VARCHAR(255) NULL",
             },
             "purchase_info": {
                 "purchase_tax_rate": "DECIMAL(10,6) NULL",
@@ -107,6 +116,23 @@ def apply_runtime_migrations() -> None:
                     conn.execute(text(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {definition}"))
                     if table_name == "order_line" and column_name == "project_name":
                         project_name_column_added = True
+                    if table_name == "order_line" and column_name in ("line_regional_platform", "line_customer_unit_name", "line_end_user_name"):
+                        line_identity_columns_added.append(column_name)
+
+        from .source_order_dates import backfill_source_order_dates
+        if backfill_source_order_dates(conn):
+            from .edit_versions import bump_epoch
+            bump_epoch(conn)
+
+        if backfill_profit_inputs(conn):
+            from .edit_versions import bump_epoch
+            bump_epoch(conn)
+
+        for column_name in line_identity_columns_added:
+            source_index = {"line_customer_unit_name": 9, "line_end_user_name": 10, "line_regional_platform": 11}[column_name]
+            conn.execute(text(f"""UPDATE order_line ol JOIN ledger_raw_row r ON r.id=ol.raw_row_id
+                SET ol.{column_name}=NULLIF(JSON_UNQUOTE(JSON_EXTRACT(r.raw_json,'$.values[{source_index}]')),'null')
+                WHERE ol.source_preserved=1"""))
 
         if project_name_column_added:
             conn.execute(
@@ -121,6 +147,31 @@ def apply_runtime_migrations() -> None:
                     """
                 )
             )
+
+        contract_reference_length = conn.execute(text("""
+            SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.columns
+            WHERE table_schema=DATABASE() AND table_name='purchase_contract'
+              AND column_name='purchase_contract_no'
+        """)).scalar()
+        if contract_reference_length is not None and int(contract_reference_length) < 255:
+            conn.execute(text("""ALTER TABLE purchase_contract
+                DROP INDEX idx_purchase_contract_no,
+                MODIFY COLUMN purchase_contract_no VARCHAR(255) NULL,
+                ADD INDEX idx_purchase_contract_no (purchase_contract_no(64))"""))
+
+        for table_name, column_name, index_name in (
+            ('purchase_invoice','invoice_no','idx_purchase_invoice_no'),
+            ('sales_invoice','invoice_no','idx_sales_invoice_no'),
+            ('sales_invoice','invoice_doc_no','idx_sales_invoice_doc'),
+            ('sales_receipt','payment_notice_no','idx_sales_receipt_notice'),
+        ):
+            reference_length = conn.execute(text("""SELECT CHARACTER_MAXIMUM_LENGTH
+                FROM information_schema.columns WHERE table_schema=DATABASE()
+                AND table_name=:table AND column_name=:column"""), {'table':table_name,'column':column_name}).scalar()
+            if reference_length is not None and int(reference_length) < 65535:
+                conn.execute(text(f"""ALTER TABLE {table_name} DROP INDEX {index_name},
+                    MODIFY COLUMN {column_name} TEXT NULL,
+                    ADD INDEX {index_name} ({column_name}(128))"""))
 
         precise_columns = {
             "order_line": ["quantity"],

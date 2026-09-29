@@ -12,7 +12,7 @@ export function combineEditContexts(contexts: Array<EditContext | undefined>): E
   }
   return result;
 }
-export interface BackendHistory { edit_context?: EditContext; order_number_history?: string[]; manager_history?: string[] }
+export interface BackendHistory { edit_context?: EditContext; order_number_history?: string[]; order_number_path?: string[]; manager_history?: string[] }
 export interface HistoryContext {
   edit_context?: EditContext;
   current: { order_line_id: number; sales_order_id: number; project_id: number; project_code: string; order_no: string; account_manager: string | null; department: string | null; branch_company: string | null; team_level3_name: string | null };
@@ -141,6 +141,8 @@ export interface BackendOrderRecord extends BackendHistory {
   accounts_receivable?: MoneyValue | null;
   accounts_payable?: MoneyValue | null;
   gross_profit?: MoneyValue | null;
+  tax_difference?: MoneyValue | null;
+  tax_refund?: MoneyValue | null;
   close_status?: string | null;
 }
 
@@ -314,6 +316,15 @@ export interface BackendSalesDetail {
   contracts: BackendSalesContract[];
   invoices: BackendSalesInvoice[];
   receipts: BackendSalesReceipt[];
+  deliveries?: Array<{
+    id: number;
+    order_line_id: number;
+    goods_name: string | null;
+    delivery_date: string | null;
+    delivery_quantity: string | null;
+    delivery_value: string | null;
+    delivery_revenue_no_tax: string | null;
+  }>;
 }
 
 export interface BackendOperationLog {

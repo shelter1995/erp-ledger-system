@@ -308,7 +308,7 @@ def get_purchase_detail(order_line_id: int, user: CurrentUser = Depends(get_curr
                        purchase_contract_signed_amount, total_finance_checked,
                        total_finance_paid, financial_accounts_payable,
                        total_paid, accounts_payable, gross_profit_no_tax,
-                       gross_profit_margin_no_tax, gross_profit
+                       gross_profit_margin_no_tax, gross_profit, tax_difference, tax_refund
                 FROM v_order_line_finance
                 WHERE order_line_id = :order_line_id
                 """
@@ -1141,6 +1141,10 @@ def _upsert_order_line_record(
     order_line_id: int,
     data: dict[str, object],
 ) -> None:
+    if table_name == 'delivery_record':
+        from ..source_delivery import preserve_multiple_deliveries
+        if preserve_multiple_deliveries(conn, order_line_id, data):
+            return
     record_id = conn.execute(
         text(
             f"""

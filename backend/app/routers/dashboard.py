@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 def _money_text(value: Decimal | int) -> str:
-    return format(Decimal(value), ".2f")
+    return format(Decimal(value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), '.2f')
 
 
 @router.get("/summary")

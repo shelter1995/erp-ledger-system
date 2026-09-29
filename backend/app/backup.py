@@ -178,6 +178,11 @@ def restore_backup(conn: Connection, backup_id: int, user: CurrentUser, *, allow
             conn.execute(text(f"INSERT INTO `{table_name}` ({column_sql}) VALUES ({value_sql})"), row)
             restored_rows += 1
 
+    from .source_order_dates import backfill_source_order_dates
+    backfill_source_order_dates(conn)
+    from .profit_calculations import backfill_profit_inputs
+    backfill_profit_inputs(conn)
+
     if payload.get('legacy_history_missing'):
         # Old v1 backups have no normalized subprojects/history: preserve known
         # current values only. Never invent earlier names or effective dates.

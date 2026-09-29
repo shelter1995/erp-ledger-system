@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import copy
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from sqlalchemy.engine import Connection
 
 from .edit_versions import line_context
@@ -145,6 +145,7 @@ PURCHASE_EDITOR_KEYS_BY_COLUMN = {
     62: "accounts_payable",
     63: "gross_profit_no_tax",
     64: "tax_difference",
+    65: "tax_refund",
     66: "gross_profit",
     67: "gross_profit_margin_no_tax",
 }
@@ -255,7 +256,29 @@ def export_ledger_bytes(
     if worksheet.max_row > 2:
         worksheet.delete_rows(3, worksheet.max_row - 2)
 
-    rows = filtered_export_rows(conn, user, filters)
+    rows = [dict(row) for row in filtered_export_rows(conn, user, filters)]
+    # A multi-delivery line still occupies one Excel row. Export all dates and
+    # their positional values rather than silently keeping the last date.
+    from .source_delivery import DELIVERY_COLUMNS
+    by_line = {}
+    ids = [row['order_line_id'] for row in rows]
+    from .history_queries import source_order_paths
+    paths = source_order_paths(conn, ids)
+    for start in range(0, len(ids), 1000):
+        phases = conn.execute(text('SELECT * FROM delivery_record WHERE order_line_id IN :ids AND deleted_at IS NULL ORDER BY id')
+            .bindparams(bindparam('ids', expanding=True)), {'ids':ids[start:start+1000]}).mappings()
+        for phase in phases:
+            by_line.setdefault(phase['order_line_id'], []).append(phase)
+    for row in rows:
+        path = paths.get(row['order_line_id'])
+        if path and path[-1] == row['order_no']:
+            row['order_no'] = '/'.join(path)
+        phases = by_line.get(row['order_line_id'], [])
+        if len(phases) > 1:
+            row['delivery_date'] = ';'.join(str(p['delivery_date'] or '') for p in phases)
+            for col, field in DELIVERY_COLUMNS.items():
+                if col < 36 and any(p[field] is not None for p in phases):
+                    row[field] = '/'.join(str(p[field]) if p[field] is not None else '' for p in phases)
 
     for row_no, row in enumerate(rows, start=3):
         values = _row_values(dict(row))
@@ -345,6 +368,11 @@ def editor_rows_for_order_lines(
     for row in rows:
         mapped = dict(row)
         values = _row_values(mapped)
+        # Editors expose the stored two-decimal amounts. Raw source precision
+        # is reserved for profit calculation and downloadable source data.
+        for index in (22, 28):
+            if values[index] is not None:
+                values[index] = Decimal(values[index]).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         # The editor uses the same percentage unit as the API (13 means 13%),
         # while the downloadable workbook stores 0.13 with percentage formatting.
         for index, key in (
@@ -466,7 +494,7 @@ def _row_values(row: dict[str, Any]) -> list[Any]:
         row.get("booked_amount"), row.get("pending_booked_amount"), row.get("payment1_due_date"),
         _date_value(row, "payment1_date", "payment1_date_text"), row.get("payment1_voucher_no"), row.get("payment1_amount"),
         _date_value(row, "payment2_date", "payment2_date_text"), row.get("payment2_voucher_no"), row.get("payment2_amount"),
-        row.get("total_paid"), row.get("accounts_payable"), row.get("gross_profit_no_tax"), row.get("tax_difference"), None,
+        row.get("total_paid"), row.get("accounts_payable"), row.get("gross_profit_no_tax"), row.get("tax_difference"), row.get("tax_refund"),
         row.get("gross_profit"), _ratio(row.get("gross_profit_margin_no_tax")),
         _date_value(row, "contract_signed_date", "contract_signed_date_text"), row.get("sales_contract_no"),
         row.get("sales_contract_value"), row.get("sales_performance_period"), row.get("sales_unsigned_contract_amount"),
@@ -501,16 +529,16 @@ def _export_sql(where_sql: str) -> str:
         SELECT
           ol.id AS order_line_id,
           so.gross_net_type, p.project_code, fin.department, fin.branch_company, fin.account_manager,
-          so.order_date, so.business_type, so.statistic_category, fin.team_level3_name,
-          sp.customer_unit_name, sp.end_user_name, sp.regional_platform, so.order_no,
+          fin.order_date, so.business_type, so.statistic_category, fin.team_level3_name,
+          fin.customer_unit_name, fin.end_user_name, fin.regional_platform, so.order_no,
           COALESCE(ol.project_name, p.project_name) AS project_name,
           ol.goods_name, ol.specification_model, ol.unit_name, ol.quantity, ol.sales_tax_rate,
-          ol.sales_unit_price_no_tax, ol.sales_unit_price, ol.revenue_no_tax, ol.order_value,
+          ol.sales_unit_price_no_tax, ol.sales_unit_price, ol.revenue_no_tax, fin.profit_order_value AS order_value,
           pi.supplier_name, pi.purchase_tax_rate, pi.purchase_unit_price_no_tax, pi.purchase_unit_price, pi.cost_no_tax,
-          pi.purchase_amount, pi.labor_cost, pi.other_cost,
-          dr.delivery_date, dr.delivery_quantity, dr.delivery_revenue_no_tax,
-          dr.delivery_value, dr.delivery_cost_no_tax, dr.delivery_cost, dr.pending_delivery_quantity,
-          dr.pending_delivery_amount_no_tax, dr.pending_delivery_amount,
+          fin.profit_purchase_amount AS purchase_amount, pi.labor_cost, pi.other_cost,
+          fin.delivery_date, fin.delivery_quantity, fin.delivery_revenue_no_tax,
+          fin.delivery_value, fin.delivery_cost_no_tax, fin.delivery_cost, fin.pending_delivery_quantity,
+          fin.pending_delivery_amount_no_tax, fin.pending_delivery_amount,
           pc.purchase_contract_no, pc.payment_terms, pc.performance_period AS purchase_performance_period,
           pc.signed_amount AS purchase_signed_amount,
           COALESCE(fin.purchase_amount, 0) - COALESCE(fin.purchase_contract_signed_amount, 0) AS purchase_unsigned_amount,
@@ -527,9 +555,7 @@ def _export_sql(where_sql: str) -> str:
           pay2.payment_amount AS payment2_amount, COALESCE(pay_total.payment_amount, 0) AS total_paid,
           COALESCE(pi.purchase_amount, 0) - COALESCE(pay_total.payment_amount, 0) AS accounts_payable,
           COALESCE(ol.revenue_no_tax, 0) - COALESCE(pi.cost_no_tax, 0) AS gross_profit_no_tax,
-          (COALESCE(ol.order_value, 0) - COALESCE(ol.revenue_no_tax, 0))
-            - (COALESCE(pi.purchase_amount, 0) - COALESCE(pi.cost_no_tax, 0)) AS tax_difference,
-          COALESCE(ol.order_value, 0) - COALESCE(pi.purchase_amount, 0) AS gross_profit,
+          fin.tax_difference, fin.tax_refund, fin.gross_profit,
           CASE WHEN COALESCE(ol.revenue_no_tax, 0) = 0 THEN 0
             ELSE (COALESCE(ol.revenue_no_tax, 0) - COALESCE(pi.cost_no_tax, 0)) / ol.revenue_no_tax * 100 END
             AS gross_profit_margin_no_tax,
@@ -556,9 +582,6 @@ def _export_sql(where_sql: str) -> str:
         LEFT JOIN sub_project sp ON sp.id = ol.sub_project_id AND sp.deleted_at IS NULL
         LEFT JOIN v_order_line_finance fin ON fin.order_line_id = ol.id
         LEFT JOIN purchase_info pi ON pi.order_line_id = ol.id AND pi.deleted_at IS NULL
-        LEFT JOIN delivery_record dr ON dr.id = (
-          SELECT MIN(dr0.id) FROM delivery_record dr0 WHERE dr0.order_line_id = ol.id AND dr0.deleted_at IS NULL
-        )
         LEFT JOIN purchase_contract pc ON pc.id = (
           SELECT MIN(pc0.id) FROM purchase_contract pc0 WHERE pc0.order_line_id = ol.id AND pc0.deleted_at IS NULL
         )
@@ -586,7 +609,7 @@ def _export_sql(where_sql: str) -> str:
           FROM sales_receipt WHERE deleted_at IS NULL GROUP BY order_line_id
         ) rec_total ON rec_total.order_line_id = ol.id
         WHERE {where_sql}
-        ORDER BY so.order_date DESC, so.order_no, ol.id
+        ORDER BY fin.order_date DESC, so.order_no, ol.id
     """
 
 
@@ -597,7 +620,7 @@ def filtered_export_rows(conn, user, filters=None):
     project_text_filters = {
         "project_id": ("p.project_code", True),
         "department": ("fin.department", False),
-        "client_unit": ("sp.customer_unit_name", True),
+        "client_unit": ("fin.customer_unit_name", True),
     }
     for key, (column, use_like) in project_text_filters.items():
         value = active_filters.get(key)
@@ -618,11 +641,11 @@ def filtered_export_rows(conn, user, filters=None):
         params["order_id"] = f"%{order_id}%"
     start_date = active_filters.get("start_date")
     if start_date not in (None, ""):
-        conditions.append("so.order_date >= :start_date")
+        conditions.append("fin.order_date >= :start_date")
         params["start_date"] = start_date
     end_date = active_filters.get("end_date")
     if end_date not in (None, ""):
-        conditions.append("so.order_date <= :end_date")
+        conditions.append("fin.order_date <= :end_date")
         params["end_date"] = end_date
 
     order_status = active_filters.get("order_status")

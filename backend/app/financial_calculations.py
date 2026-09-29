@@ -74,6 +74,7 @@ def calculate_line(values: dict, previous: dict | None = None) -> dict:
         # A description/date edit must not replace authoritative source totals
         # with a fresh multiplication of rounded unit prices.
         for drivers, outputs in (
+            (('quantity','delivery_quantity'), ('pending_delivery_quantity',)),
             (('quantity','sales_tax_rate','sales_unit_price_no_tax','sales_unit_price'), ('sales_unit_price','revenue_no_tax','order_value')),
             (('quantity','purchase_tax_rate','purchase_unit_price_no_tax','purchase_unit_price'), ('purchase_unit_price','cost_no_tax','purchase_amount')),
             (('delivery_quantity','sales_unit_price_no_tax','sales_unit_price'), ('delivery_revenue_no_tax','delivery_value','pending_delivery_amount_no_tax','pending_delivery_amount')),
@@ -125,6 +126,8 @@ def refresh_line(conn, order_line_id: int, *, sales: bool = True, purchase: bool
 
 def refresh_balances(conn, order_line_id: int) -> None:
     """Refresh stored calculated compatibility fields after any owning mutation."""
+    from .profit_calculations import sync_source_profit_amounts
+    sync_source_profit_amounts(conn, [order_line_id])
     current = line_snapshot(conn, order_line_id)
     if not current:
         return
@@ -199,6 +202,9 @@ def refresh_balances_many(conn, order_line_ids) -> None:
     ids = sorted({int(order_line_id) for order_line_id in order_line_ids})
     if not ids:
         return
+
+    from .profit_calculations import sync_source_profit_amounts
+    sync_source_profit_amounts(conn, ids)
 
     snapshots = []
     line_orders = {}

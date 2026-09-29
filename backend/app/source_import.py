@@ -1,22 +1,30 @@
-"""Import an authoritative ledger without inferring renames or financial allocations.
+"""Import an authoritative ledger using confirmed positional allocation rules.
 
 Source rows are business records, including repeated rows. File digests prevent
 replaying a completed file. All mutations run in the caller's locked transaction.
 """
 from collections import Counter
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
 from hashlib import sha256
 from io import BytesIO
 import json
+import posixpath
+import re
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 from fastapi import HTTPException
 from openpyxl import load_workbook
+from openpyxl.styles.numbers import is_date_format
+from openpyxl.utils import get_column_letter
 from sqlalchemy import bindparam, text
 
 from .importer import import_excel, validate_template_numbers
 from .ledger_excel import (
     LEGACY_TEMPLATE_HEADERS,
+    NUMBER_COLUMNS,
+    PERCENT_COLUMNS,
     TEMPLATE_HEADERS,
     normalize_standard_row,
     standard_template_version,
@@ -28,10 +36,10 @@ from .legacy_ledger_parser import (
     parse_document_sequence,
 )
 from .legacy_import_service import FINANCE_SOURCES, PHASE_TABLE_COLUMNS
-from .ledger_history import merge_chain
 from .validation import validate_business_date
 from .financial_calculations import refresh_balances_many, update_fields_many
 from .edit_versions import touch_lines
+from .source_delivery import delivery_phases, DELIVERY_COLUMNS
 from .historical_project_identity import (
     ProjectResolution,
     _is_generated_temporary_code,
@@ -74,11 +82,71 @@ def normalize_source_row(values, layout):
 
 
 def source_column(layout, standard_column):
+    if layout == 91 and standard_column >= 89:
+        return None if standard_column == 89 else standard_column - 1
     if layout != 'transitional_91':
         return standard_column
     if standard_column == 25:
         return None
     return standard_column if standard_column < 25 else standard_column - 1
+
+
+def restore_source_number_formats(content, ws, layout):
+    """Recover numeric XML values misread as dates in known non-date fields.
+
+    Read the stored number, never reverse-convert a datetime (which has already
+    lost precision or become #VALUE!). Real date columns and literal Excel
+    errors are untouched. Only the in-memory normalization copy is changed.
+    """
+    document_columns = {45, 48, 51, 56, 59, 73, 75, 80, 84}
+    columns = {
+        source_column(layout, col): col
+        for col in NUMBER_COLUMNS | PERCENT_COLUMNS | document_columns
+        if source_column(layout, col) is not None
+    }
+    candidates = {
+        cell.coordinate: columns[cell.column]
+        for row in ws.iter_rows(min_row=3)
+        for cell in row
+        if cell.column in columns and cell.value is not None
+        and is_date_format(cell.number_format)
+    }
+    if not candidates:
+        return []
+    main_ns = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    rel_ns = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+    warnings = []
+    with ZipFile(BytesIO(content)) as archive:
+        workbook = ElementTree.fromstring(archive.read('xl/workbook.xml'))
+        sheet = next(s for s in workbook.find(main_ns + 'sheets') if s.get('name') == ws.title)
+        relationships = ElementTree.fromstring(archive.read('xl/_rels/workbook.xml.rels'))
+        relation = next(r for r in relationships if r.get('Id') == sheet.get(rel_ns + 'id'))
+        target = relation.get('Target')
+        path = target.lstrip('/') if target.startswith('/') else posixpath.normpath(posixpath.join('xl', target))
+        with archive.open(path) as source:
+            for _, node in ElementTree.iterparse(source, events=('end',)):
+                if node.tag == main_ns + 'c':
+                    coordinate = node.get('r')
+                    value = node.find(main_ns + 'v')
+                    if coordinate in candidates and node.get('t', 'n') == 'n' and value is not None and value.text:
+                        col = candidates.pop(coordinate)
+                        cell = ws[coordinate]
+                        # Match openpyxl's numeric conversion; document numbers
+                        # remain text so their digits survive the next workbook read.
+                        cell.value = (format(Decimal(value.text), 'f') if col in document_columns
+                                      else float(value.text) if any(c in value.text for c in '.eE')
+                                      else int(value.text))
+                        cell.number_format = 'General'
+                        warnings.append({
+                            'row': cell.row, 'field': TEMPLATE_HEADERS[col - 1],
+                            'message': f'{coordinate} 误设为日期格式，已按原文件保存的数值读取，请核对；原文件未修改',
+                        })
+                    node.clear()
+                elif node.tag == main_ns + 'row':
+                    node.clear()
+                if not candidates:
+                    break
+    return warnings
 
 
 def source_text(value):
@@ -87,7 +155,7 @@ def source_text(value):
     return value.isoformat() if isinstance(value, (datetime, date)) else str(value)
 
 
-def source_phases(date_value, amount_value, document_value):
+def source_phases(date_value, amount_value, document_value, *, split_single_total=False):
     """Only split proven positional pairs. Otherwise retain one undated total."""
     dates = parse_date_sequence(date_value)
     amounts = parse_amount_sequence(amount_value)
@@ -97,6 +165,19 @@ def source_phases(date_value, amount_value, document_value):
     total = sum(amounts.values, Decimal(0)) if amounts.values else None
     if total is not None:
         total = total.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    if (split_single_total and not dates.blocking and len(dates.values) > 1
+            and len(amounts.values) in (1, len(dates.values))
+            and len(documents.values) in (0, 1, len(dates.values))):
+        count = len(dates.values)
+        if len(amounts.values) == 1:
+            share = (total / count).quantize(Decimal('.01'), rounding=ROUND_DOWN)
+            values = [share] * (count - 1) + [total - share * (count - 1)]
+        else:
+            values = [v.quantize(Decimal('.01'), rounding=ROUND_HALF_UP) for v in amounts.values]
+        refs = (documents.values * count if len(documents.values) == 1
+                else documents.values or [None] * count)
+        return [(validate_business_date(d), d.isoformat(), value, ref)
+                for d, value, ref in zip(dates.values, values, refs)], False
     if len(dates.values) == len(amounts.values) > 1 and not dates.blocking and len(documents.values) in (0, len(dates.values)):
         return [(validate_business_date(d), d.isoformat(), a.quantize(Decimal('.01'), rounding=ROUND_HALF_UP), documents.values[i] if documents.values else None)
                 for i, (d, a) in enumerate(zip(dates.values, amounts.values))], False
@@ -106,7 +187,8 @@ def source_phases(date_value, amount_value, document_value):
 
 
 def source_order_chain(value, row_no):
-    parsed = merge_order_number_history([value], order_key=source_text(value) or '')
+    normalized = re.sub(r'[/／](?:\s*[/／])+', '/', source_text(value) or '')
+    parsed = merge_order_number_history([normalized], order_key=normalized)
     if parsed.blocking:
         detail = '；'.join(issue.message for issue in parsed.issues if issue.blocking)
         raise ValueError(f'第 {row_no} 行销售订单号无效：{detail}')
@@ -163,98 +245,43 @@ def _has_other_temporary_project(projects_by_order, order_no, official_code):
 
 
 def persist_order_histories(conn, line_ids, order_chains):
+    """Index all source aliases without inventing one linear history per order.
+
+    Rows may converge on one current number or diverge from a shared old number.
+    Their exact ordered paths remain in ledger_raw_row and are exposed per line.
+    Existing orders/lines are never reassigned by importing another source path.
+    """
     if not line_ids:
         return
-    rows = conn.execute(
-        text('''SELECT ol.id AS order_line_id,so.id AS sales_order_id,so.project_id
+    owners = {int(row['order_line_id']): row for row in conn.execute(
+        text('''SELECT ol.id AS order_line_id,so.id AS sales_order_id,so.order_no
             FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id
             WHERE ol.id IN :ids''').bindparams(bindparam('ids', expanding=True)),
         {'ids': list(line_ids.values())},
-    ).mappings().all()
-    owners = {int(row['order_line_id']): row for row in rows}
+    ).mappings()}
     targets = {}
     for row_no, line_id in line_ids.items():
         owner = owners[int(line_id)]
-        sales_order_id = int(owner['sales_order_id'])
-        chain = list(order_chains[row_no])
-        previous = targets.get(sales_order_id)
-        if previous and previous['chain'] != chain:
-            raise ValueError(
-                f'第 {row_no} 行销售订单号历史链与同一订单的其他行不一致，'
-                '请统一后重新导入'
-            )
-        targets[sales_order_id] = {
-            'chain': chain,
-            'project_id': int(owner['project_id']),
-            'row_no': row_no,
-        }
-
-    order_ids = sorted(targets)
-    project_ids = sorted({target['project_id'] for target in targets.values()})
-    history_rows = conn.execute(
-        text(
-            'SELECT sales_order_id,order_no,history_order '
-            'FROM sales_order_number_history WHERE sales_order_id IN :ids '
-            'ORDER BY sales_order_id,history_order'
-        ).bindparams(bindparam('ids', expanding=True)),
-        {'ids': order_ids},
-    ).mappings().all()
+        target = targets.setdefault(int(owner['sales_order_id']), {'current':owner['order_no'], 'aliases':[]})
+        target['aliases'].extend(order_chains[row_no])
     histories = {}
-    for history in history_rows:
-        histories.setdefault(int(history['sales_order_id']), []).append(str(history['order_no']))
-
-    # One project-scoped read replaces a conflict query for every alias. It also
-    # sees current numbers created earlier in this same import transaction.
-    occupancy_rows = conn.execute(
-        text(
-            'SELECT so.id,so.project_id,so.order_no,h.order_no AS history_order_no '
-            'FROM sales_order so LEFT JOIN sales_order_number_history h '
-            'ON h.sales_order_id=so.id '
-            'WHERE so.deleted_at IS NULL AND so.project_id IN :ids'
-        ).bindparams(bindparam('ids', expanding=True)),
-        {'ids': project_ids},
-    ).mappings().all()
-    current_numbers = {}
-    occupied = {}
-    for row in occupancy_rows:
-        order_id = int(row['id'])
-        project_id = int(row['project_id'])
-        current_numbers[order_id] = str(row['order_no'])
-        for number in (row['order_no'], row['history_order_no']):
-            if number not in (None, ''):
-                occupied.setdefault((project_id, str(number)), set()).add(order_id)
-
+    for row in conn.execute(text('''SELECT sales_order_id,order_no FROM sales_order_number_history
+        WHERE sales_order_id IN :ids ORDER BY history_order''').bindparams(bindparam('ids', expanding=True)),
+        {'ids':list(targets)}).mappings():
+        histories.setdefault(int(row['sales_order_id']), []).append(row['order_no'])
     inserts = []
-    for sales_order_id, target in targets.items():
-        chain = target['chain']
-        conflicts = {
-            number
-            for number in chain
-            if occupied.get((target['project_id'], number), set()) - {sales_order_id}
-        }
-        if conflicts:
-            numbers = '、'.join(sorted(conflicts))
-            raise ValueError(
-                f"第 {target['row_no']} 行销售订单号 {numbers} 已属于同一项目的其他订单，"
-                '不能作为本订单的历史编号'
-            )
-        existing = histories.get(sales_order_id) or [current_numbers[sales_order_id]]
-        merged = merge_chain(existing, chain, what='订单号')
-        if merged.blocked:
-            raise ValueError(f"第 {target['row_no']} 行{merged.reason}")
-        inserts.extend({
-            'sales_order_id': sales_order_id,
-            'order_no': order_no,
-            'history_order': history_order,
-            'source': SOURCE_IMPORT_HISTORY_SOURCE,
-        } for history_order, order_no in enumerate(merged.chain, 1))
-
+    for order_id, target in targets.items():
+        aliases = list(dict.fromkeys(histories.get(order_id, []) + target['aliases']))
+        aliases = [number for number in aliases if number != target['current']] + [target['current']]
+        inserts.extend({'sales_order_id':order_id, 'order_no':number, 'history_order':position,
+                        'source':SOURCE_IMPORT_HISTORY_SOURCE}
+                       for position,number in enumerate(aliases,1))
     statement = text('''INSERT INTO sales_order_number_history
         (sales_order_id,order_no,history_order,source)
         VALUES (:sales_order_id,:order_no,:history_order,:source)
         ON DUPLICATE KEY UPDATE order_no=VALUES(order_no),source=VALUES(source)''')
-    for start in range(0, len(inserts), 1000):
-        conn.execute(statement, inserts[start:start + 1000])
+    for start in range(0,len(inserts),1000):
+        conn.execute(statement,inserts[start:start+1000])
 
 
 def import_source(conn, content, filename, user, *, preview=False, duplicate_confirmation=None):
@@ -268,7 +295,8 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         raise ValueError('请使用包含唯一业务工作表的 0916 新版92列或原版91列模板')
     ws = candidates[0]
     version = source_template_layout([c.value for c in ws[2]])
-    originals, records, warnings = {}, {}, []
+    originals, records, deliveries = {}, {}, {}
+    warnings = restore_source_number_formats(content, ws, version)
     groups = dict(FINANCE_SOURCES)
     groups['finance_payment_entry'] = groups.pop('finance_invoice_check')
     # Sales document number and invoice number are separate source columns.
@@ -286,6 +314,8 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         if not row[12] or not row[14]:
             raise ValueError(f'第 {row_no} 行缺少销售订单号或物资/服务名称')
         order_chain = source_order_chain(row[12], row_no)
+        if re.search(r'[/／]\s*[/／]', source_text(row[12]) or ''):
+            warnings.append({'row':row_no, 'field':'销售订单号', 'message':'连续斜杠按一个分隔符解析，保留已有历史编号顺序'})
         originals[row_no] = row[:]
         order_chains[row_no] = order_chain
         order_no = order_chain[-1]
@@ -350,6 +380,15 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
     for row_no, cells, row in prepared_rows:
         row[1] = effective_codes[row_no]
         row[12] = order_chains[row_no][-1]
+        deliveries[row_no], allocated = delivery_phases(row, row_no)
+        if allocated:
+            warnings.append({'row':row_no, 'field':'交付情况', 'message':'多日期对应单个合计时按期均分金额和数量；尾差计入最后一期，合计不变'})
+        # Feed scalar totals to the base importer; replace its provisional
+        # delivery row with the proven positional phases after import succeeds.
+        row[29] = deliveries[row_no][0]['delivery_date']
+        for col, field in DELIVERY_COLUMNS.items():
+            values = [p[field] for p in deliveries[row_no] if p[field] is not None]
+            row[col - 1] = sum(values, Decimal(0)) if values else None
         for col in (19,25):
             original_col = source_column(version, col)
             if original_col and cells[original_col-1].data_type == 'e':
@@ -361,8 +400,15 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
             for dc, ac, nc in sources:
                 if all(row[c-1] in (None, '') for c in (dc, ac, nc)):
                     continue
-                parts, aggregate = source_phases(row[dc-1], row[ac-1], row[nc-1])
+                try:
+                    parts, aggregate = source_phases(row[dc-1], row[ac-1], row[nc-1], split_single_total=name == 'purchase_invoice')
+                except ValueError as exc:
+                    coordinate = f'{get_column_letter(source_column(version, ac))}{row_no}'
+                    raise ValueError(f'{coordinate}（第 {row_no} 行，{TEMPLATE_HEADERS[ac-1]}）：{exc}') from exc
                 phases.extend(parts)
+                if name == 'purchase_invoice' and len(parts) > 1 and len(parse_amount_sequence(row[ac-1]).values) == 1:
+                    warnings.append({'row':row_no, 'field':TEMPLATE_HEADERS[ac-1],
+                                     'message':'多收票日期对应单个合计，按期均分，尾差计入最后一期；单一发票号沿用原值'})
                 if aggregate:
                     warnings.append({'row':row_no, 'field':TEMPLATE_HEADERS[ac-1], 'message':'保留原日期文本及合计金额，不分摊；无单一日期的金额不归入某一天'})
             records[row_no][name] = phases
@@ -423,7 +469,6 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
     authoritative = {
         'order_line': [],
         'purchase_info': [],
-        'delivery_record': [],
     }
     for row_no, line_id in ids.items():
         row = originals[row_no]
@@ -439,15 +484,6 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
                 'purchase_unit_price': 27,
                 'cost_no_tax': 28,
                 'purchase_amount': 29,
-            },
-            'delivery_record': {
-                'delivery_revenue_no_tax': 32,
-                'delivery_value': 33,
-                'delivery_cost_no_tax': 34,
-                'delivery_cost': 35,
-                'pending_delivery_quantity': 36,
-                'pending_delivery_amount_no_tax': 37,
-                'pending_delivery_amount': 38,
             },
         }.items():
             values = {'id': line_id}
@@ -494,21 +530,17 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         authoritative['purchase_info'],
         ('purchase_unit_price_no_tax', 'purchase_unit_price', 'cost_no_tax', 'purchase_amount'),
     )
-    update_fields_many(
-        conn,
-        'delivery_record',
-        'order_line_id',
-        authoritative['delivery_record'],
-        (
-            'delivery_revenue_no_tax',
-            'delivery_value',
-            'delivery_cost_no_tax',
-            'delivery_cost',
-            'pending_delivery_quantity',
-            'pending_delivery_amount_no_tax',
-            'pending_delivery_amount',
-        ),
-    )
+    delivery_rows = [dict(phase, order_line_id=ids[row_no])
+                     for row_no, phases in deliveries.items() for phase in phases]
+    line_ids = list(ids.values())
+    for start in range(0, len(line_ids), 1000):
+        conn.execute(text('DELETE FROM delivery_record WHERE order_line_id IN :ids')
+                     .bindparams(bindparam('ids', expanding=True)), {'ids':line_ids[start:start+1000]})
+    fields = ['order_line_id', 'delivery_date', *DELIVERY_COLUMNS.values()]
+    statement = text(f'INSERT INTO delivery_record ({",".join(fields)}) VALUES ({",".join(":"+f for f in fields)})')
+    for start in range(0, len(delivery_rows), 1000):
+        conn.execute(statement, delivery_rows[start:start+1000])
+    written['delivery_record'] = len(delivery_rows)
     for name, rows in phase_inserts.items():
         dc, nc, ac = PHASE_TABLE_COLUMNS[name]
         extra_column = ',invoice_doc_no' if name == 'sales_invoice' else (

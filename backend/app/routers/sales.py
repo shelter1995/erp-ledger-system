@@ -10,7 +10,7 @@ from ..audit import write_batch_operation_log, write_operation_log
 from ..auth import CurrentUser, apply_department_scope, can_access_department, get_current_user, require_permission
 from ..edit_versions import line_context
 from ..db import db
-from ..history_queries import order_match, manager_match, enrich_history, enrich_phases
+from ..history_queries import order_match, manager_match, enrich_history, enrich_phases, delivery_records
 from ..financial_calculations import refresh_balances, sales_record_values
 from ..ledger_excel import (
     editor_changed_keys,
@@ -100,6 +100,8 @@ SUMMARY_AMOUNT_FIELDS = {
     "delivery_accounts_receivable",
     "invoice_accounts_receivable",
     "gross_profit",
+    "tax_difference",
+    "tax_refund",
 }
 
 
@@ -300,7 +302,7 @@ def get_sales_detail_by_order(project_id: str, order_id: str, user: CurrentUser 
                        purchase_contract_no, purchase_contract_signed_amount,
                        sales_contract_no, sales_contract_signed_date, sales_contract_value,
                        sales_invoice_amount, total_received, accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable,
-                       gross_profit_no_tax, gross_profit_margin_no_tax, gross_profit
+                       gross_profit_no_tax, gross_profit_margin_no_tax, gross_profit, tax_difference, tax_refund
                 FROM v_order_line_finance
                 WHERE project_code = :project_id AND order_no = :order_id
                 ORDER BY order_line_id
@@ -361,10 +363,12 @@ def get_sales_detail_by_order(project_id: str, order_id: str, user: CurrentUser 
         ).mappings().all()
 
         edit_context = line_context(conn,[r["order_line_id"] for r in summary_rows])
+        deliveries = delivery_records(conn, [r['order_line_id'] for r in summary_rows])
     invoices, receipts = sales_record_values(summary_rows, invoices, receipts)
     return {
         "edit_context":edit_context,
         "summary": clean_row(_aggregate_summary(summary_rows)),
+        "deliveries": deliveries,
         "contracts": clean_rows(contracts),
         "invoices": clean_rows(invoices),
         "receipts": clean_rows(receipts),
@@ -384,7 +388,7 @@ def get_sales_detail(order_line_id: int, user: CurrentUser = Depends(get_current
                        supplier_name, purchase_amount, delivery_quantity, delivery_value,
                        purchase_contract_no, purchase_contract_signed_amount,
                        sales_contract_no, sales_contract_signed_date, sales_contract_value,
-                       sales_invoice_amount, total_received, accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable, gross_profit
+                       sales_invoice_amount, total_received, accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable, gross_profit, tax_difference, tax_refund
                 FROM v_order_line_finance
                 WHERE order_line_id = :order_line_id
                 """
@@ -435,10 +439,12 @@ def get_sales_detail(order_line_id: int, user: CurrentUser = Depends(get_current
         ).mappings().all()
 
         edit_context = line_context(conn,[order_line_id])
+        deliveries = delivery_records(conn, [order_line_id])
     invoices, receipts = sales_record_values([summary], invoices, receipts)
     return {
         "edit_context":edit_context,
         "summary": clean_row(summary),
+        "deliveries": deliveries,
         "contracts": clean_rows(contracts),
         "invoices": clean_rows(invoices),
         "receipts": clean_rows(receipts),

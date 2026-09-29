@@ -242,7 +242,7 @@ def list_orders(
                        total_paid,
                        accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable,
                        accounts_payable,
-                       gross_profit,
+                       gross_profit, tax_difference, tax_refund,
                        close_status,
                        last_modified_at
                 FROM (
@@ -255,18 +255,18 @@ def list_orders(
                            finance.branch_company,
                            finance.account_manager,
                            finance.team_level3_name,
-                           sp.end_user_name,
-                           sp.regional_platform,
-                           so.order_date,
+                           finance.end_user_name,
+                           finance.regional_platform,
+                           finance.order_date,
                            so.business_type,
                            so.statistic_category,
-                           sp.customer_unit_name,
+                           finance.customer_unit_name,
                            COALESCE(ol.project_name, p.project_name) AS project_name,
                            finance.total_received,
                            finance.total_paid,
                            finance.accounts_receivable, finance.delivery_accounts_receivable, finance.invoice_accounts_receivable,
                            finance.accounts_payable,
-                           finance.gross_profit,
+                           finance.gross_profit, finance.tax_difference, finance.tax_refund,
                            finance.close_status,
                            finance.last_modified_at,
                            ol.goods_name,
@@ -288,21 +288,20 @@ def list_orders(
                            COALESCE(pi.purchase_amount, 0) - COALESCE(pi.cost_no_tax, 0) AS purchase_tax_amount,
                            pi.labor_cost,
                            pi.other_cost,
-                           dr.delivery_date,
-                           dr.delivery_quantity,
-                           dr.delivery_revenue_no_tax,
-                           dr.delivery_value,
-                           dr.delivery_cost_no_tax,
-                           dr.delivery_cost,
-                           dr.pending_delivery_quantity,
-                           dr.pending_delivery_amount_no_tax,
-                           dr.pending_delivery_amount
+                           finance.delivery_date,
+                           finance.delivery_quantity,
+                           finance.delivery_revenue_no_tax,
+                           finance.delivery_value,
+                           finance.delivery_cost_no_tax,
+                           finance.delivery_cost,
+                           finance.pending_delivery_quantity,
+                           finance.pending_delivery_amount_no_tax,
+                           finance.pending_delivery_amount
                     FROM project p
                     JOIN sales_order so ON so.project_id = p.id AND so.deleted_at IS NULL
                     JOIN order_line ol ON ol.sales_order_id = so.id AND ol.deleted_at IS NULL
                     LEFT JOIN sub_project sp ON sp.id = ol.sub_project_id AND sp.deleted_at IS NULL
                     LEFT JOIN purchase_info pi ON pi.order_line_id = ol.id AND pi.deleted_at IS NULL
-                    LEFT JOIN delivery_record dr ON dr.order_line_id = ol.id AND dr.deleted_at IS NULL
                     LEFT JOIN v_order_line_finance finance ON finance.order_line_id = ol.id
                     WHERE p.deleted_at IS NULL
                 ) order_detail
@@ -849,19 +848,25 @@ def update_order_line(
                 UPDATE sales_order
                 SET gross_net_type = :gross_net_type,
                     order_no = :order_no,
-                    order_date = :order_date,
+                    order_date = CASE WHEN :source_preserved = 1 THEN order_date ELSE :order_date END,
                     business_type = :business_type,
                     statistic_category = :statistic_category
                 WHERE id = :sales_order_id
                 """
             ),
-            {"sales_order_id": ids["sales_order_id"], **order_data},
+            {"sales_order_id": ids["sales_order_id"], "source_preserved": bool(ids.get('source_preserved')), **order_data},
         )
         # 子项目名称可能被改：先定位/建立目标子项目并写入子项目字段，
         # 再把明细挂到它下面（改子项目名等于把这条明细移到目标子项目）。
         sub_project_id = _resolve_sub_project(
-            conn, ids["sales_order_id"], line_data["project_name"], sub_project_data
+            conn, ids["sales_order_id"], line_data["project_name"], sub_project_data,
+            preserve_source_fields=bool(ids.get('source_preserved')),
         )
+        if ids.get('source_preserved'):
+            conn.execute(text('UPDATE order_line SET line_order_date=:value, line_order_date_initialized=1 WHERE id=:id'),
+                         {'id':order_line_id, 'value':data['order_date']})
+            conn.execute(text('UPDATE order_line SET line_regional_platform=:value, line_customer_unit_name=:customer, line_end_user_name=:end_user WHERE id=:id'),
+                         {'id':order_line_id, 'value':data['regional_platform'], 'customer':data['customer_unit_name'], 'end_user':data['user_name']})
         conn.execute(
             text(
                 """
@@ -1030,6 +1035,7 @@ def _validate_batch_update_targets(
 ) -> None:
     project_targets: dict[int, tuple[object, ...]] = {}
     order_targets: dict[int, tuple[object, ...]] = {}
+    shared_order_dates: dict[int, object] = {}
     line_targets: dict[int, tuple[str, str, str, Decimal, Decimal, str]] = {}
     order_ids: set[int] = set()
 
@@ -1046,8 +1052,12 @@ def _validate_batch_update_targets(
         )
         order_target = tuple(
             data[key]
-            for key in ("amount_type", "order_no", "order_date", "business_type", "statistical_category")
+            for key in ("amount_type", "order_no", "business_type", "statistical_category")
         )
+        if not ids.get('source_preserved'):
+            if sales_order_id in shared_order_dates and shared_order_dates[sales_order_id] != data['order_date']:
+                raise HTTPException(status_code=422, detail="同一销售订单的订单级字段必须保持一致，请统一修改后再提交")
+            shared_order_dates[sales_order_id] = data['order_date']
         if ids.get('source_preserved'):
             project_id = -order_line_id
         if project_id in project_targets and project_targets[project_id] != project_target:
@@ -1184,7 +1194,7 @@ def _update_basic_order_line_in_conn(
             UPDATE sales_order
             SET gross_net_type = :gross_net_type,
                 order_no = :order_no,
-                order_date = :order_date,
+                order_date = CASE WHEN :source_preserved = 1 THEN order_date ELSE :order_date END,
                 business_type = :business_type,
                 statistic_category = :statistic_category
             WHERE id = :sales_order_id
@@ -1192,6 +1202,7 @@ def _update_basic_order_line_in_conn(
         ),
         {
             "sales_order_id": ids["sales_order_id"],
+            "source_preserved": bool(ids.get('source_preserved')),
             "gross_net_type": data["amount_type"],
             "order_no": data["order_no"],
             "order_date": data["order_date"],
@@ -1208,7 +1219,13 @@ def _update_basic_order_line_in_conn(
             "end_user_name": data["user_name"],
             "regional_platform": data["regional_platform"],
         },
+        preserve_source_fields=bool(ids.get('source_preserved')),
     )
+    if ids.get('source_preserved'):
+        conn.execute(text('UPDATE order_line SET line_order_date=:value, line_order_date_initialized=1 WHERE id=:id'),
+                     {'id':order_line_id, 'value':data['order_date']})
+        conn.execute(text('UPDATE order_line SET line_regional_platform=:value, line_customer_unit_name=:customer, line_end_user_name=:end_user WHERE id=:id'),
+                     {'id':order_line_id, 'value':data['regional_platform'], 'customer':data['customer_unit_name'], 'end_user':data['user_name']})
     conn.execute(
         text(
             """
@@ -1381,10 +1398,11 @@ def _create_order_line(conn, payload: OrderUpdate) -> int:
             """
             INSERT INTO order_line
               (sales_order_id, sub_project_id, project_name, goods_name, specification_model, unit_name, quantity,
-               sales_tax_rate, sales_unit_price_no_tax, sales_unit_price, revenue_no_tax, order_value)
+               sales_tax_rate, sales_unit_price_no_tax, sales_unit_price, revenue_no_tax, order_value,
+               profit_inputs_initialized)
             VALUES
               (:sales_order_id, :sub_project_id, :project_name, :goods_name, :specification_model, :unit_name, :quantity,
-               :sales_tax_rate, :net_unit_price, :unit_price, :net_revenue, :order_value)
+               :sales_tax_rate, :net_unit_price, :unit_price, :net_revenue, :order_value, 1)
             """
         ),
         {"sales_order_id": sales_order_id, "sub_project_id": sub_project_id, **data},
@@ -1452,6 +1470,7 @@ def _resolve_sub_project(
     sales_order_id: int,
     name: object,
     values: dict[str, object],
+    *, preserve_source_fields: bool = False,
 ) -> int:
     """按（订单, 子项目名称）定位子项目；不存在则新建，并写入子项目级字段。
 
@@ -1471,13 +1490,13 @@ def _resolve_sub_project(
             text(
                 """
                 UPDATE sub_project
-                SET customer_unit_name = :customer_unit_name,
-                    end_user_name = :end_user_name,
-                    regional_platform = :regional_platform
+                SET customer_unit_name = IF(:preserve_source_fields, customer_unit_name, :customer_unit_name),
+                    end_user_name = IF(:preserve_source_fields, end_user_name, :end_user_name),
+                    regional_platform = IF(:preserve_source_fields, regional_platform, :regional_platform)
                 WHERE id = :sub_project_id
                 """
             ),
-            {"sub_project_id": int(existing), **values},
+            {"sub_project_id": int(existing), "preserve_source_fields":preserve_source_fields, **values},
         )
         return int(existing)
     result = conn.execute(
@@ -1489,17 +1508,21 @@ def _resolve_sub_project(
               (:sales_order_id, :name, :customer_unit_name, :end_user_name, :regional_platform)
             ON DUPLICATE KEY UPDATE
               id = LAST_INSERT_ID(id),
-              customer_unit_name = VALUES(customer_unit_name),
-              end_user_name = VALUES(end_user_name),
-              regional_platform = VALUES(regional_platform)
+              customer_unit_name = IF(:preserve_source_fields, customer_unit_name, VALUES(customer_unit_name)),
+              end_user_name = IF(:preserve_source_fields, end_user_name, VALUES(end_user_name)),
+              regional_platform = IF(:preserve_source_fields, regional_platform, VALUES(regional_platform))
             """
         ),
-        {"sales_order_id": sales_order_id, "name": normalized, **values},
+        {"sales_order_id": sales_order_id, "name": normalized, "preserve_source_fields":preserve_source_fields, **values},
     )
     return int(result.lastrowid or 0)
 
 
 def _upsert_line_record(conn, table_name: str, order_line_id: int, data: dict[str, object]) -> None:
+    if table_name == 'delivery_record':
+        from ..source_delivery import preserve_multiple_deliveries
+        if preserve_multiple_deliveries(conn, order_line_id, data):
+            return
     exists = conn.execute(
         text(f"SELECT id FROM {table_name} WHERE order_line_id = :order_line_id AND deleted_at IS NULL LIMIT 1"),
         {"order_line_id": order_line_id},

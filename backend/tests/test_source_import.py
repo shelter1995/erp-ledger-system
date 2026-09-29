@@ -46,6 +46,42 @@ def source_file_with_identities(rows):
     return workbook_bytes(wb)
 
 
+@pytest.mark.parametrize('amount', [0, 0.25, 123.45, 12345678])
+def test_source_import_recovers_numbers_with_date_formats(client, headers, amount):
+    wb = load_workbook(BytesIO(current_import_file()))
+    ws = wb.active
+    ws['AR3'] = '2025-01-02'
+    ws['AT3'] = amount
+    ws['AS3'] = 12345678
+    ws['BW3'] = 87654321
+    for coordinate in ('AT3', 'AS3', 'BW3'):
+        ws[coordinate].number_format = 'yyyy-mm-dd'
+    content = workbook_bytes(wb)
+    preview = client.post('/api/orders/source-import?filename=date-format.xlsx', content=content, headers=headers)
+    assert preview.status_code == 200, preview.text
+    with db() as conn:
+        assert conn.execute(text('SELECT COUNT(*) FROM order_line')).scalar_one() == 0
+    result = client.post('/api/orders/source-import?filename=date-format.xlsx&preview=false', content=content, headers=headers)
+    assert result.status_code == 200, result.text
+    assert any('日期格式' in item['message'] for item in result.json()['warnings'])
+    with db() as conn:
+        row = conn.execute(text('SELECT invoice_amount,invoice_no,received_invoice_date FROM purchase_invoice')).mappings().one()
+        assert row['invoice_amount'] == Decimal(str(amount))
+        assert row['invoice_no'] == '12345678'
+        assert row['received_invoice_date'].isoformat() == '2025-01-02'
+        assert conn.execute(text('SELECT invoice_no FROM sales_invoice')).scalar_one() == '87654321'
+
+
+def test_source_import_invalid_finance_identifies_cell_without_echoing_value(client, headers):
+    wb = load_workbook(BytesIO(current_import_file()))
+    wb.active['AT3'] = 'private-invalid-amount'
+    response = client.post('/api/orders/source-import?filename=invalid.xlsx', content=workbook_bytes(wb), headers=headers)
+    assert response.status_code == 422
+    detail = response.json()['detail']
+    assert 'AT3' in detail and '收票金额' in detail
+    assert 'private-invalid-amount' not in detail
+
+
 def test_source_preview_batches_post_import_line_work(client, headers):
     content = source_file_with_identities([
         (f'P-BATCH-{index}', f'SO-BATCH-{index}', f'设备-{index}')
@@ -246,6 +282,41 @@ def test_transitional_92_source_import_preserves_purchase_tax_and_financial_colu
     assert row['purchase_amount'] == Decimal('158.20')
     assert row['labor_cost'] == Decimal('12.34')
     assert row['other_cost'] == Decimal('5.67')
+
+
+def test_source_import_ignores_bn_result_in_dashboard_and_sales_detail(client, headers):
+    workbook = load_workbook(BytesIO(transitional_92_source_file()))
+    workbook.active['BN3'] = Decimal('12.34')
+    workbook.active['BL3'] = Decimal('7.80')
+    workbook.active['BM3'] = Decimal('3.00')
+    content = workbook_bytes(workbook)
+
+    imported = client.post(
+        '/api/orders/source-import?filename=bn-gross-profit.xlsx&preview=false',
+        content=content,
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.text
+
+    with db() as conn:
+        row = conn.execute(text(
+            'SELECT project_code, order_no, source_gross_profit, gross_profit '
+            'FROM order_line ol JOIN v_order_line_finance v ON v.order_line_id = ol.id'
+        )).mappings().one()
+    assert row['source_gross_profit'] == Decimal('12.34')
+    assert row['gross_profit'] == Decimal('63.00')  # 226 - 158.20 - 7.80 + 3
+
+    dashboard = client.get('/api/dashboard/summary', headers=headers)
+    assert dashboard.status_code == 200, dashboard.text
+    assert dashboard.json()['grossProfit'] == '63.00'
+
+    detail = client.get(
+        '/api/sales/by-order',
+        params={'project_id': row['project_code'], 'order_id': row['order_no']},
+        headers=headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert Decimal(detail.json()['summary']['gross_profit']) == Decimal('63.00')
 
 
 def test_source_rows_preview_commit_and_duplicate_file(client, headers):

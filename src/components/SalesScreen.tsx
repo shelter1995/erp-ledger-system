@@ -668,6 +668,18 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
                     ['毛利润', formatMoney(summary?.gross_profit)],
                   ]} />
 
+                  <DataBlock title="交付情况" emptyText="暂无交付记录">
+                    {detail?.deliveries?.map((item) => (
+                      <RecordRow key={item.id} values={[
+                        ['物资/服务名称', item.goods_name],
+                        ['交付日期', item.delivery_date],
+                        ['交付数量', item.delivery_quantity],
+                        ['交付金额', formatMoney(item.delivery_value)],
+                        ['不含税交付收入', formatMoney(item.delivery_revenue_no_tax)],
+                      ]} />
+                    ))}
+                  </DataBlock>
+
                   <DataBlock title="销售合同" emptyText="暂无销售合同记录">
                     {detail?.contracts.map((item) => (
                       <RecordRow key={item.id} values={[

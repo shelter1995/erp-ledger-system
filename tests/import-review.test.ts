@@ -23,6 +23,15 @@ test('wizard starts at file selection and keeps advanced choices out of the main
   assert.doesNotMatch(html,/确认导入 \d+ 条/);
 });
 
+test('file selection is one explicit labelled action with format help', () => {
+  const html=renderToStaticMarkup(React.createElement(SourceLedgerImport,{onClose:()=>{},onImported:async()=>{}}));
+  assert.match(html,/for="source-ledger-file"/);
+  assert.match(html,/id="source-ledger-file"/);
+  assert.match(html,/aria-describedby="source-ledger-file-help"/);
+  assert.match(html,/id="source-ledger-file-help"/);
+  assert.match(html,/lucide-upload/);
+});
+
 test('duplicate confirmation is sent only when explicitly supplied and preserves file bytes', async () => {
   const original=globalThis.fetch;const calls:RequestInit[]=[];
   globalThis.fetch=(async (_url,init)=>{calls.push(init!);return new Response('{}',{status:200});}) as typeof fetch;

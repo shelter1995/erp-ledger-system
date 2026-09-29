@@ -13,7 +13,8 @@ export function optionalAmount(value: MoneyValue | null | undefined): string | u
 }
 
 export function decimalMoney(value: MoneyValue | null | undefined): Decimal {
-  return new FinancialDecimal(value ?? 0);
+  const normalized = typeof value === 'string' && value.trim() === '' ? 0 : value ?? 0;
+  return new FinancialDecimal(normalized);
 }
 
 export function moneyString(value: MoneyValue | null | undefined): string {

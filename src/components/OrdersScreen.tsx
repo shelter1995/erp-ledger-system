@@ -10,7 +10,7 @@ import {
   ChevronLeft, 
   ChevronRight, 
   ShoppingBag,
-  FileUp,
+  Upload,
   FileSpreadsheet,
   ListChecks,
   Eye,
@@ -872,13 +872,13 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
         onHistory={() => { setShowSourceImport(false); setShowLegacyPreview(true); }}
         onDirectImport={event => { setShowSourceImport(false); void handleBatchImport(event); }} />}
       {/* Page Header */}
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="shrink-0">
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">基本信息列表</h1>
           <p className="text-sm text-slate-500 font-sans mt-1">查看和管理客户订单的基础业务信息</p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2 self-start sm:self-center">
-          {canImportLedger && <button type="button" disabled={importBusy} onClick={() => setShowSourceImport(true)} className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold"><FileUp className="w-4 h-4" />导入台账</button>}
+        <div aria-label="基本信息页面操作" className="flex flex-wrap items-center gap-2 self-start lg:max-w-[760px] lg:justify-end">
+          {canImportLedger && <button type="button" disabled={importBusy} onClick={() => setShowSourceImport(true)} className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg shadow-sm transition-colors text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45"><Upload className="w-4 h-4 text-blue-600" />导入台账</button>}
           {canEnterOrders && (
             <>
               <button

@@ -6,7 +6,7 @@ import DashboardScreen from '../src/components/DashboardScreen';
 import LedgerScreen from '../src/components/LedgerScreen';
 import OrdersScreen from '../src/components/OrdersScreen';
 
-test('ledger transfer actions render familiar upload and download icons', () => {
+test('ledger export keeps its icon while basic information has no duplicate import entry', () => {
   const ordersMarkup = renderToStaticMarkup(React.createElement(OrdersScreen, {
     orders: [],
     onAddOrder: async () => undefined,
@@ -30,7 +30,8 @@ test('ledger transfer actions render familiar upload and download icons', () => 
   }));
 
   assert.match(ordersMarkup, /aria-label="基本信息页面操作"/);
-  assert.match(ordersMarkup, /lucide-upload/);
+  assert.doesNotMatch(ordersMarkup, /导入台账/);
+  assert.match(ordersMarkup, /aria-label="每页条数"/);
   assert.match(ledgerMarkup, /lucide-download/);
 });
 

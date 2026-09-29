@@ -84,8 +84,8 @@ def test_order_persistence_routes_exist():
     assert "POST" in _route_methods("/api/orders/batch")
 
 
-def test_system_metadata_requires_admin_permission():
-    assert "system_admin" in _required_permissions("/api/logs")
-    assert "system_admin" in _required_permissions("/api/backups")
-    assert "system_admin" in _required_permissions("/api/backups", "POST")
-    assert "system_admin" in _required_permissions("/api/backups/{backup_id}/restore", "POST")
+def test_system_modules_require_independent_permissions():
+    assert "logs_view" in _required_permissions("/api/logs")
+    assert "backups_view" in _required_permissions("/api/backups")
+    assert "backups_create" in _required_permissions("/api/backups", "POST")
+    assert "backups_restore" in _required_permissions("/api/backups/{backup_id}/restore", "POST")

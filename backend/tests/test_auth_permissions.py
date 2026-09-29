@@ -6,7 +6,8 @@ from pydantic import ValidationError
 
 from app import config
 from app.auth import CurrentUser, ROLE_PERMISSIONS, can_access_department, has_permission, normalize_permissions
-from app.routers.auth import UserCreate, _validate_department_permissions
+from app.routers.accounts import UserCreate
+from app.authorization import validate_policy
 
 
 def test_admin_can_use_every_permission():
@@ -62,22 +63,11 @@ def test_default_admin_password_allows_admin123(monkeypatch):
     config.validate_security_settings()
 
 
-def test_new_user_password_requires_at_least_six_characters():
-    user = UserCreate(
-        username="user6",
-        password="123456",
-        display_name="Test User",
-        role_code="viewer",
-    )
-    assert user.password == "123456"
-
+def test_new_user_password_requires_at_least_twelve_characters():
+    policy=dict(username='user12',display_name='Test User',account_type='ledger_admin',scope_mode='none')
+    assert UserCreate(**policy,password='Password-123').password == 'Password-123'
     with pytest.raises(ValidationError):
-        UserCreate(
-            username="user5",
-            password="12345",
-            display_name="Test User",
-            role_code="viewer",
-        )
+        UserCreate(**policy,password='short')
 
 
 def test_department_scope_limits_view_and_entry():
@@ -98,17 +88,7 @@ def test_department_scope_limits_view_and_entry():
 
 
 def test_department_entry_requires_view_permission():
-    for department_scope in (["QA"], []):
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_department_permissions(
-                department_scope,
-                department_can_view=False,
-                department_can_entry=True,
-            )
-
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "勾选录入权限时必须同时勾选查看权限，用于核对录入数据是否有误"
-
-    _validate_department_permissions(["QA"], department_can_view=True, department_can_entry=True)
-    _validate_department_permissions(["QA"], department_can_view=True, department_can_entry=False)
-    _validate_department_permissions([], department_can_view=False, department_can_entry=False)
+    with pytest.raises(HTTPException) as exc_info:
+        validate_policy('department_user','selected',[1],['order_entry'],'self',1)
+    assert exc_info.value.status_code==422
+    validate_policy('department_user','selected',[1],['order_view','order_entry'],'self',1)

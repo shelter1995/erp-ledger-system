@@ -99,7 +99,7 @@ def start_write(conn):
       WHERE p.deleted_at IS NULL AND ol.id IN :ids''').bindparams(bindparam('ids',expanding=True)),{'ids':ids}).mappings().all()
     user=getattr(request.state,'current_user',None)
     if user is None or any(not can_access_department(user,r['department'],True) for r in projects):
-        raise HTTPException(403,'没有目标项目的维护权限')
+        raise HTTPException(404,'目标记录不存在或不可维护')
     try:
         supplied=json.loads(request.headers.get('X-Edit-Context',''))
         if not isinstance(supplied,dict) or not isinstance(supplied.get('projects'),dict) or not isinstance(supplied.get('data_epoch'),int): raise ValueError()

@@ -145,4 +145,4 @@ export interface BackupInfo {
   backupTime: string; // 备份时间 (YYYY-MM-DD HH:mm:ss)
 }
 
-export type ScreenType = 'dashboard' | 'ledger' | 'orders' | 'purchases' | 'sales' | 'system';
+export type ScreenType = 'dashboard' | 'ledger' | 'orders' | 'purchases' | 'sales' | 'system' | 'maintenance' | 'accounts' | 'logs' | 'backups' | 'profile';

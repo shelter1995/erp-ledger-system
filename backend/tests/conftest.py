@@ -89,6 +89,13 @@ def initialize_test_schema() -> None:
         for statement in _split_sql(schema.replace("erp_ledger", database)):
             conn.execute(text(statement))
     ensure_default_admin()
+    # Regression fixtures model an established account; v2 lifecycle tests explicitly
+    # exercise the temporary-password gate with newly created accounts.
+    with db() as conn:
+        conn.execute(text("UPDATE erp_user SET must_change_password=0 WHERE username='admin'"))
+        for name in ('QA', '销售部', '市场部', '采购部', '科贸部', '物流部', '部门A', '部门B', '甲部', '乙部', 'EXPORT-QA', '第二部门'):
+            result=conn.execute(text('INSERT IGNORE INTO department(name) VALUES(:n)'), {'n':name})
+            conn.execute(text('INSERT IGNORE INTO department_alias(name,department_id) SELECT name,id FROM department WHERE name=:n'), {'n':name})
 
 
 def clear_business_data() -> None:

@@ -1,5 +1,6 @@
 """H3：旧台账预检流程与多期写入。"""
 from __future__ import annotations
+from account_fixtures import create_test_account
 
 from datetime import date
 from decimal import Decimal
@@ -235,10 +236,7 @@ def test_commit_rejects_a_changed_file(client: TestClient, headers: dict[str, st
 
 def test_another_user_cannot_read_the_session(client: TestClient, headers: dict[str, str]) -> None:
     session_id = _preview(client, headers, [_row()]).json()["session_id"]
-    created = client.post(
-        "/api/auth/users",
-        headers=headers,
-        json={
+    created = create_test_account(client, headers=headers, payload={
             "username": "legacy-other",
             "password": USER_PASSWORD,
             "display_name": "legacy-other",
@@ -248,8 +246,7 @@ def test_another_user_cannot_read_the_session(client: TestClient, headers: dict[
             "department_can_view": True,
             "department_can_entry": True,
             "department_all": True,
-        },
-    )
+        })
     assert created.status_code == 200, created.text
     try:
         login = client.post(

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from openpyxl import Workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text, bindparam
-from ..auth import CurrentUser, get_current_user, require_permission, can_access_department
+from ..auth import CurrentUser, get_current_user, require_permission, can_access_department, apply_department_scope
 from ..edit_versions import line_context
 from ..db import db
 from ..audit import write_operation_log
@@ -32,7 +32,7 @@ def context(conn, line_id, user, write=False):
     if not row:
         raise HTTPException(404, '订单明细不存在')
     if not can_access_department(user, row['department'], require_entry=write):
-        raise HTTPException(403, '没有该部门的访问权限')
+        raise HTTPException(404, '订单明细不存在')
     if write and row['source_preserved']:
         raise HTTPException(409, '原表导入按明细保存归属，不能用框架整体交接或历史改号覆盖原表多值；请按明细维护')
     return dict(row)
@@ -48,7 +48,9 @@ def read_history(line_id: int, user: CurrentUser = Depends(get_current_user)):
         if row['source_preserved']:
             numbers = [{'order_no':row['order_no'], 'history_order':1, 'source':'原表记录（未推断改号）'}]
             managers = [{'manager_name':row['account_manager'], 'history_order':1, 'effective_from':None, 'source':'原表明细归属（未推断交接）'}]
-        count = conn.execute(text('SELECT COUNT(*) FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id AND so.deleted_at IS NULL WHERE so.project_id=:id AND ol.deleted_at IS NULL'), {'id':row['project_id']}).scalar_one()
+        scope, params = ['project_code=:code'], {'code':row['project_code']}
+        apply_department_scope(scope, params, user)
+        count = conn.execute(text('SELECT COUNT(*) FROM v_order_line_finance WHERE ' + ' AND '.join(scope)), params).scalar_one()
     return {'edit_context':edit_context,'current':clean_row(row), 'order_numbers':clean_rows(numbers), 'managers':clean_rows(managers), 'affected_lines':count}
 
 
@@ -78,6 +80,9 @@ def rename_orders(payload: Renames, user: CurrentUser = Depends(require_permissi
         for item in payload.items:
             row = context(conn, item.order_line_id, user, True)
             oid = row['sales_order_id']
+            departments = conn.execute(text('SELECT CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id JOIN project p ON p.id=so.project_id WHERE so.id=:id AND ol.deleted_at IS NULL'), {'id':oid}).scalars().all()
+            if any(not can_access_department(user, d, True) for d in departments):
+                raise HTTPException(404, '订单包含不可维护的明细')
             if oid in seen:
                 raise HTTPException(422, '同一订单只能提交一次改号')
             seen.add(oid)
@@ -92,7 +97,7 @@ def rename_orders(payload: Renames, user: CurrentUser = Depends(require_permissi
               SELECT :id, :number, COALESCE(MAX(history_order),0)+1, 'manual_change'
               FROM sales_order_number_history WHERE sales_order_id=:id'''), {'id':oid, 'number':item.order_no})
             conn.execute(text('UPDATE sales_order SET order_no=:number WHERE id=:id'), {'id':oid,'number':item.order_no})
-            write_operation_log(conn, user, '订单管理', 'rename_order', f'变更订单号：{item.reason}', before={'sales_order_id':oid,'order_no':row['order_no']}, after={'sales_order_id':oid,'order_no':item.order_no})
+            write_operation_log(conn, user, '订单管理', 'rename_order', f'变更订单号：{item.reason}', before={'sales_order_id':oid,'order_no':row['order_no'],'affected_departments':[{'department':d} for d in departments]}, after={'sales_order_id':oid,'order_no':item.order_no})
     return {'updated':len(seen)}
 
 
@@ -119,7 +124,12 @@ class Transfer(BaseModel):
 def transfer_project(payload: Transfer, user: CurrentUser = Depends(require_permission('order_edit'))):
     keys = ('account_manager', 'department', 'branch_company', 'team_level3_name')
     with business_write() as conn:
-        row = context(conn, payload.order_line_id, user, True)
+        row = context(conn, payload.order_line_id, user, False)
+        from ..department_service import validate_name
+        validate_name(conn, payload.department, canonical=True)
+        affected = conn.execute(text('SELECT DISTINCT department FROM v_order_line_finance WHERE project_code=:code'), {'code':row['project_code']}).scalars().all()
+        if any(not can_access_department(user, department, True) for department in affected):
+            raise HTTPException(404, '框架包含当前账号不可维护的明细')
         if not can_access_department(user, payload.department, require_entry=True):
             raise HTTPException(403, '没有目标部门的维护权限')
         if set(payload.expected) != set(keys) or any(payload.expected[k] != row[k] for k in keys):
@@ -134,7 +144,8 @@ def transfer_project(payload: Transfer, user: CurrentUser = Depends(require_perm
               SELECT :id, :manager, COALESCE(MAX(history_order),0)+1, :date, 'manual_change'
               FROM project_manager_history WHERE project_id=:id'''), {'id':pid,'manager':payload.account_manager,'date':payload.effective_from})
         conn.execute(text('UPDATE project SET account_manager=:account_manager, department=:department, branch_company=:branch_company, team_level3_name=:team_level3_name WHERE id=:id'), {'id':pid,**data})
-        write_operation_log(conn,user,'订单管理','transfer_project',f'框架整体交接：{payload.reason}', before={k:row[k] for k in keys},after={'project_id':pid,**data})
+        conn.execute(text('UPDATE order_line ol JOIN sales_order so ON so.id=ol.sales_order_id SET ol.line_department=:department,ol.line_account_manager=:account_manager,ol.line_branch_company=:branch_company,ol.line_team_level3_name=:team_level3_name WHERE so.project_id=:id AND ol.source_preserved=1 AND ol.deleted_at IS NULL'), {'id':pid,**data})
+        write_operation_log(conn,user,'订单管理','transfer_project',f'框架整体交接：{payload.reason}', before={**{k:row[k] for k in keys},'affected_departments':[{'department':d} for d in affected]},after={'project_id':pid,**data})
     return {'updated':True}
 
 

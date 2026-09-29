@@ -357,7 +357,7 @@ def test_source_rows_preview_commit_and_duplicate_file(client, headers):
     assert len(ledger.json()['items']) == 1
     assert Decimal(ledger.json()['items'][0]['order_amount']) == lines[1]['order_value']
     assert ledger.json()['items'][0]['account_manager'] == '乙'
-    assert client.get(f"/api/history/lines/{lines[0]['order_line_id']}",headers=scoped).status_code == 403
+    assert client.get(f"/api/history/lines/{lines[0]['order_line_id']}",headers=scoped).status_code == 404
 
 
 def test_source_import_persists_long_order_number_chain_as_history(client, headers):

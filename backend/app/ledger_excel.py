@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill
+from .department_service import department_filter
 from sqlalchemy import text, bindparam
 from sqlalchemy.engine import Connection
 
@@ -626,7 +627,7 @@ def filtered_export_rows(conn, user, filters=None):
         value = active_filters.get(key)
         if value in (None, ""):
             continue
-        conditions.append(f"{column} {'LIKE' if use_like else '='} :{key}")
+        conditions.append(department_filter(column, key) if key == "department" else f"{column} {'LIKE' if use_like else '='} :{key}")
         params[key] = f"%{value}%" if use_like else value
 
     if active_filters.get("manager"):

@@ -57,7 +57,7 @@ def list_batches(offset:int=Query(0,ge=0),limit:int=Query(20,ge=1,le=100),user:C
 
 def assessment(conn,batch,user):
     reasons=[]
-    if 'system_admin' not in user.permissions:
+    if user.account_type != 'super_admin':
         reasons.append('仅管理员可撤销整批导入')
     if batch['status']!='completed':
         reasons.append('该批次已撤销或尚未导入完成')

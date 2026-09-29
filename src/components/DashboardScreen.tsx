@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { accountApi, AggregateData, Department } from '../api';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowRight,
   BadgeDollarSign,
@@ -23,6 +24,8 @@ import {
 import { approximateMoney, decimalMoney, formatMoney as formatExactMoney, type MoneyValue } from '../lib/money';
 
 interface DashboardScreenProps {
+  serverMode?: boolean;
+  showLogs?: boolean;
   logs: OperationLog[];
   ledgers: ProjectLedger[];
   orders: OrderRecord[];
@@ -52,20 +55,25 @@ function smoothPath(points: TrendPoint[]) {
   }, `M ${points[0].x} ${points[0].y}`);
 }
 
-export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: DashboardScreenProps) {
+export default function DashboardScreen({ logs, ledgers, orders, onNavigate, serverMode = false, showLogs = true }: DashboardScreenProps) {
   const [hoveredTrendIndex, setHoveredTrendIndex] = useState<number | null>(null);
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
-  const departmentOptions = getDashboardDepartments(orders);
+  const [aggregate,setAggregate]=useState<Omit<AggregateData,'items'>|null>(null);
+  const [departments,setDepartments]=useState<Department[]>([]);
+  const [loadError,setLoadError]=useState('');
+  useEffect(()=>{if(!serverMode)return;let active=true;setLoadError('');accountApi.dashboard({department:selectedDepartment,start_date:startDate,end_date:endDate}).then(r=>{if(active)setAggregate(r);}).catch(e=>{if(active)setLoadError(e.message);});return()=>{active=false;};},[serverMode,selectedDepartment,startDate,endDate]);
+  useEffect(()=>{if(serverMode)accountApi.departments().then(r=>setDepartments(r.items)).catch(e=>setLoadError(e.message));},[serverMode]);
+  const departmentOptions = serverMode ? departments.filter(d=>d.is_active).map(d=>d.name) : getDashboardDepartments(orders);
   const dashboardFilters = { department: selectedDepartment, startDate, endDate };
-  const dashboardMetrics = getDashboardMetrics({ ledgers, orders, ...dashboardFilters });
-  const salesRanking = getDashboardSalesRanking(orders, selectedDepartment, startDate, endDate);
+  const dashboardMetrics = (serverMode ? aggregate?.metrics : null) || getDashboardMetrics({ ledgers, orders, ...dashboardFilters });
+  const salesRanking = (serverMode ? aggregate?.ranking : null) || getDashboardSalesRanking(orders, selectedDepartment, startDate, endDate);
   const salesRankingTitle = selectedDepartment ? '三级团队销售订单金额排行' : '部门销售订单金额排行';
   const recentLogs = logs.slice(0, 5);
-  const trendData = getDashboardTrendData(orders, dashboardFilters);
-  const latestModifiedAt = getDashboardLatestModifiedAt(orders, dashboardFilters);
+  const trendData = (serverMode ? aggregate?.trends : null) || getDashboardTrendData(orders, dashboardFilters);
+  const latestModifiedAt = (serverMode ? aggregate?.latestModifiedAt : null) || getDashboardLatestModifiedAt(orders, dashboardFilters);
   const maxTrendValue = Math.max(...trendData.flatMap((item) => [approximateMoney(item.orderAmount), approximateMoney(item.profit)]), 1);
   const toPoint = (value: MoneyValue, index: number): TrendPoint => ({
     x: trendData.length === 1 ? 300 : (index / (trendData.length - 1)) * 600,
@@ -123,7 +131,7 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">仪表盘概览</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">仪表盘概览</h1>{loadError&&<p role="alert" className="text-red-700">{loadError}</p>}
           <p className="text-sm text-slate-500 font-sans mt-1">欢迎回来，这是今天的业务实时动态。</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 self-start sm:self-center">
@@ -333,7 +341,7 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      {showLogs && <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="p-5 border-b border-slate-200 flex justify-between items-center">
           <h3 className="font-semibold text-slate-900 text-sm">操作日志</h3>
           <div className="flex items-center gap-2">
@@ -384,14 +392,14 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
 
         <div className="p-4 bg-slate-50/50 border-t border-slate-100 flex justify-center">
           <button
-            onClick={() => onNavigate('system')}
+            onClick={() => onNavigate('logs')}
             className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 hover:gap-1.5 transition-all"
           >
             <span>查看全部日志</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

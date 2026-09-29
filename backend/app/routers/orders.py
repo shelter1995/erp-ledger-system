@@ -541,7 +541,7 @@ class PreviewResolutions(BaseModel):
 
 def _create_import_preview(content: bytes, file_name: str, user: CurrentUser) -> dict:
     with business_write() as conn:
-        return create_preview_session(conn, user_id=user.id, file_name=file_name, content=content)
+        return create_preview_session(conn, user_id=user.id, user=user, file_name=file_name, content=content)
 
 
 def _commit_import_preview(session_id: str, content: bytes, user: CurrentUser, is_admin: bool) -> dict:
@@ -951,7 +951,7 @@ def get_order_line(order_line_id: int, user: CurrentUser) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="Order line not found")
     if not can_access_department(user, str(row["department"]) if row["department"] is not None else None):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
     return {**clean_row(row), "edit_context":version}
 
 
@@ -985,7 +985,7 @@ def _ensure_order_line_in_conn(
     if row is None:
         raise HTTPException(status_code=404, detail="Order line not found")
     if not can_access_department(user, str(row["department"]) if row["department"] is not None else None, require_entry):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
     return dict(row)
 
 
@@ -1020,7 +1020,7 @@ def _validate_create_payload(payload: OrderUpdate, user: CurrentUser, *, source_
     if missing:
         raise HTTPException(status_code=422, detail=f"缺少必填字段: {', '.join(missing)}")
     if not can_access_department(user, payload.department, require_entry=True):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
 
 
 def _identity_number(value: object) -> Decimal:
@@ -1263,6 +1263,12 @@ def _update_basic_order_line_in_conn(
     refresh_line(conn, order_line_id, sales=False)
 
 def _create_order_line(conn, payload: OrderUpdate) -> int:
+    from ..edit_versions import request_context
+    from ..department_service import validate_name
+    request = request_context.get(None)
+    actor = getattr(request.state, 'current_user', None) if request else None
+    if actor and actor.authorization_version == 1:
+        validate_name(conn, payload.department, canonical=True)
     data = _calculated_payload_data(payload)
     project = conn.execute(
         text("SELECT * FROM project WHERE project_code = :project_code LIMIT 1"),
@@ -1277,6 +1283,8 @@ def _create_order_line(conn, payload: OrderUpdate) -> int:
         "team_level3_name": data["team_name"],
     }
     if project:
+        if actor and not can_access_department(actor, project['department'], True):
+            raise HTTPException(404, '框架不存在')
         project_id = int(project["id"])
         if not project.get('deleted_at'):
             for key, value in project_values.items():
@@ -1320,6 +1328,7 @@ def _create_order_line(conn, payload: OrderUpdate) -> int:
     }
     if sales_order:
         sales_order_id = int(sales_order["id"])
+        _guard_shared_order_change(conn, sales_order_id, data, False)
         conn.execute(
             text(
                 """
@@ -1538,9 +1547,28 @@ def _upsert_line_record(conn, table_name: str, order_line_id: int, data: dict[st
 
 
 def _guard_identity_change(conn, ids, data):
+    _guard_shared_order_change(conn, ids['sales_order_id'], data, bool(ids.get('source_preserved')))
     current = conn.execute(text("SELECT account_manager,department,branch_company,team_level3_name,order_no FROM v_order_line_finance WHERE order_line_id=:id"), {'id':ids['order_line_id']}).mappings().one()
     if data.get('order_no') != current['order_no']:
         raise HTTPException(409, '请使用“变更订单号”操作；普通编辑不能改号')
     for key, field in [('account_manager','account_manager'),('department','department'),('branch_company','branch_company'),('team_name','team_level3_name')]:
         if (data.get(key) or '') != (current[field] or ''):
             raise HTTPException(409, '请使用“框架整体交接”操作修改归属；普通编辑不能交接')
+
+
+def _guard_shared_order_change(conn, sales_order_id, data, source_preserved):
+    """One visible line cannot authorize rewriting a shared order for other departments."""
+    from ..edit_versions import request_context
+    request=request_context.get(None)
+    actor=getattr(request.state,'current_user',None) if request else None
+    if not actor or actor.scope_mode=='all' or actor.account_type=='super_admin':
+        return
+    current=conn.execute(text('SELECT gross_net_type,order_date,business_type,statistic_category FROM sales_order WHERE id=:id'),{'id':sales_order_id}).mappings().one()
+    keys=[('amount_type','gross_net_type'),('business_type','business_type'),('statistical_category','statistic_category')]
+    if not source_preserved:
+        keys.append(('order_date','order_date'))
+    if all(str(data.get(k) or '')==str(current[c] or '') for k,c in keys):
+        return
+    departments=conn.execute(text('SELECT CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id JOIN project p ON p.id=so.project_id WHERE so.id=:id AND ol.deleted_at IS NULL'),{'id':sales_order_id}).scalars()
+    if any(not can_access_department(actor,d,True) for d in departments):
+        raise HTTPException(404,'订单包含不可维护的明细，不能修改共享订单字段')

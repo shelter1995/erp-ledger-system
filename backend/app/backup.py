@@ -154,6 +154,9 @@ def verify_backup(conn: Connection, backup_id: int):
 def restore_backup(conn: Connection, backup_id: int, user: CurrentUser, *, allow_source_mapping=False) -> dict[str, Any]:
     record,payload=backup_payload(conn,backup_id,allow_source_mapping=allow_source_mapping)
     tables=payload['tables']
+    if user.authorization_version == 1:
+        from .department_service import validate_restore_departments
+        validate_restore_departments(conn, tables)
     # Validate every table and column before deleting anything.
     for table_name,rows in tables.items():
         allowed=set(_insertable_columns(conn,table_name))

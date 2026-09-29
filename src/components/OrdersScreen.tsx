@@ -1,3 +1,4 @@
+import { PageSizeSelect } from './ManagementUI';
 import HistoryChange from './HistoryChange';
 import React, { useState, useMemo, useRef } from 'react';
 import { api, ApiError } from '../api';
@@ -128,7 +129,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
+  const [itemsPerPage, setItemsPerPage] = useState(5);
 
   // New Order Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -229,7 +230,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
   const paginatedOrders = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredOrders.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredOrders, currentPage]);
+  }, [filteredOrders, currentPage, itemsPerPage]);
 
   const totalPages = Math.max(1, Math.ceil(filteredOrders.length / itemsPerPage));
   const paginationItems = getPaginationItems(totalPages);
@@ -878,7 +879,6 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
           <p className="text-sm text-slate-500 font-sans mt-1">查看和管理客户订单的基础业务信息</p>
         </div>
         <div aria-label="基本信息页面操作" className="flex flex-wrap items-center gap-2 self-start lg:max-w-[760px] lg:justify-end">
-          {canImportLedger && <button type="button" disabled={importBusy} onClick={() => setShowSourceImport(true)} className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg shadow-sm transition-colors text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45"><Upload className="w-4 h-4 text-blue-600" />导入台账</button>}
           {canEnterOrders && (
             <>
               <button
@@ -1178,7 +1178,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             </button>
 
             <div className="ml-3 flex items-center gap-1 text-xs text-slate-500">
-              <span>跳转至</span>
+              <PageSizeSelect value={itemsPerPage} onChange={size=>{setItemsPerPage(size);setCurrentPage(1);}}/><span>跳转至</span>
               <input
                 type="number"
                 min={1}

@@ -237,3 +237,18 @@ assert.deepEqual(
     },
   ],
 );
+
+const historicalPolicyLog={user_name:'管理员',action_name:'update_user_permissions',detail:JSON.stringify({
+  summary:'修改账号“reader”权限',
+  before:{username:'reader',display_name:'读者',is_active:1,last_login_at:'2026-09-29',authorization_version:1,account_type:'department_user',scope_mode:'selected',log_scope:'self',permissions:['ledger_view','sales_view']},
+  after:{account_type:'department_user',scope_mode:'selected',log_scope:'department',permissions:['ledger_view','logs_view']}
+})};
+const policyText=formatOperationLogDetails(historicalPolicyLog);
+assert.match(policyText,/新增权限：操作日志查看/);
+assert.match(policyText,/移除权限：销售信息查看/);
+assert.match(policyText,/日志范围：本人 → 授权部门/);
+assert.doesNotMatch(policyText,/显示名称|账号状态|last_login_at|authorization_version|→ 空|ledger_view|logs_view/);
+assert.equal(formatOperationLogChangeGroups(historicalPolicyLog)[0].changes.length,3);
+assert.deepEqual(formatOperationLogChangeGroups({user_name:'管理员',action_name:'update_user_permissions',detail:JSON.stringify({before:{permissions:['ledger_view','logs_view']},after:{permissions:['logs_view','ledger_view']}})}),[]);
+
+assert.deepEqual(formatOperationLogChangeGroups({user_name:'管理员',action_name:'update_user_permissions',detail:JSON.stringify({before:{account_type:'department_user',permissions:[],department_ids:[1]},after:{account_type:'department_user',permissions:[],department_ids:[1,2]}})}, {1:'市场部',2:'采购部'})[0].changes,['授权部门：市场部 → 市场部、采购部']);

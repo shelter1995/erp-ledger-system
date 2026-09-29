@@ -1,4 +1,5 @@
 from __future__ import annotations
+from account_fixtures import create_test_account
 
 import json
 import os
@@ -922,9 +923,7 @@ def test_excel_template_import_export_round_trip(client: TestClient, headers: di
     assert "整批回滚" in duplicate_response.json()["detail"]
     assert _count("order_line") == 1
 
-    create_scoped_user = client.post(
-        "/api/auth/users",
-        json={
+    create_scoped_user = create_test_account(client, headers=headers, payload={
             "username": "excel-scope-user",
             "password": "Excel-Scope-Test-20260721!",
             "display_name": "Excel Scope User",
@@ -934,9 +933,7 @@ def test_excel_template_import_export_round_trip(client: TestClient, headers: di
             "department_scope": ["OTHER"],
             "department_can_view": True,
             "department_can_entry": True,
-        },
-        headers=headers,
-    )
+        })
     assert create_scoped_user.status_code == 200, create_scoped_user.text
     scoped_login = client.post(
         "/api/auth/login",
@@ -1444,7 +1441,9 @@ def _admin_user() -> CurrentUser:
         id=int(user_id),
         username="admin",
         display_name="admin",
-        role_code="admin",
+        role_code="super_admin",
+        account_type="super_admin",
+        scope_mode="all",
         permissions=sorted(ALL_PERMISSIONS),
         department_scope=[],
         department_can_view=True,
@@ -1458,18 +1457,14 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
 ) -> None:
     username = "lifecycle-user"
     password = "Lifecycle-Test-20260730!"
-    created = client.post(
-        "/api/auth/users",
-        json={
+    created = create_test_account(client, headers=headers, payload={
             "username": username,
             "password": password,
             "display_name": "Lifecycle User",
             "role_code": "viewer",
-        },
-        headers=headers,
-    )
+        })
     assert created.status_code == 200, created.text
-    created_user = next(item for item in created.json()["items"] if item["username"] == username)
+    created_user = next(item for item in client.get("/api/auth/users", headers=headers).json()["items"] if item["username"] == username)
     user_id = int(created_user["id"])
     reset_password = "Lifecycle-Reset-20260730!"
 
@@ -1512,7 +1507,7 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
         f"/api/auth/users/{user_id}/permanent",
         headers=headers,
     )
-    assert permanent_while_active.status_code == 400
+    assert permanent_while_active.status_code == 409
     assert "先停用账号" in permanent_while_active.json()["detail"]
 
     login = client.post(
@@ -1520,6 +1515,15 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
         json={"username": username, "password": reset_password},
     )
     assert login.status_code == 200, login.text
+    user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert login.json()['user']['must_change_password'] is True
+    assert client.get("/api/orders/export", headers=user_headers).status_code == 403
+    personal_password = "Lifecycle-Personal-20260929!"
+    changed = client.post('/api/auth/change-password', headers=user_headers, json={
+        'old_password': reset_password, 'new_password': personal_password, 'confirm_password': personal_password})
+    assert changed.status_code == 200, changed.text
+    reset_password = personal_password
+    login = client.post('/api/auth/login', json={'username':username,'password':reset_password})
     user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     assert client.get("/api/orders/export", headers=user_headers).status_code == 200
 
@@ -1538,7 +1542,7 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
 
     deactivated = client.delete(f"/api/auth/users/{user_id}", headers=headers)
     assert deactivated.status_code == 200, deactivated.text
-    assert all(item["username"] != username for item in deactivated.json()["items"])
+    assert all(item["username"] != username for item in client.get("/api/auth/users", headers=headers).json()["items"])
 
     inactive = client.get(
         "/api/auth/users",
@@ -1557,7 +1561,7 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
         json={"password": "Should-Not-Apply-20260730!"},
         headers=headers,
     )
-    assert reset_inactive.status_code == 400
+    assert reset_inactive.status_code == 409
     assert "先恢复账号" in reset_inactive.json()["detail"]
 
     restored = client.post(
@@ -1565,7 +1569,7 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
         headers=headers,
     )
     assert restored.status_code == 200, restored.text
-    assert any(item["username"] == username for item in restored.json()["items"])
+    assert any(item["username"] == username for item in client.get("/api/auth/users", headers=headers).json()["items"])
     assert client.post(
         "/api/auth/login",
         json={"username": username, "password": reset_password},
@@ -1582,7 +1586,7 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
         f"/api/auth/users/{user_id}/restore",
         headers=headers,
     )
-    assert already_active.status_code == 400
+    assert already_active.status_code == 409
     assert "已启用" in already_active.json()["detail"]
 
     deactivated_again = client.delete(f"/api/auth/users/{user_id}", headers=headers)
@@ -1593,7 +1597,7 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
         headers=headers,
     )
     assert permanently_deleted.status_code == 200, permanently_deleted.text
-    assert all(item["username"] != username for item in permanently_deleted.json()["items"])
+    assert all(item["username"] != username for item in client.get("/api/auth/users", headers=headers, params={"status":"inactive"}).json()["items"])
     assert _count("erp_user", "id = :id", id=user_id) == 0
     with db() as conn:
         detached_logs = conn.execute(
@@ -1618,16 +1622,12 @@ def test_user_deactivation_and_permanent_deletion_lifecycle(
     assert int(detached_logs or 0) >= 1
     assert detached_backup_creator is None
 
-    recreated = client.post(
-        "/api/auth/users",
-        json={
+    recreated = create_test_account(client, headers=headers, payload={
             "username": username,
             "password": password,
             "display_name": "Lifecycle User Recreated",
             "role_code": "viewer",
-        },
-        headers=headers,
-    )
+        })
     assert recreated.status_code == 200, recreated.text
 
 
@@ -2088,11 +2088,7 @@ def test_invalid_input_cases(case: str, client: TestClient, headers: dict[str, s
 
     elif case == "I-10":
         order_line_id, _ = _create_order(client, headers, case)
-        created = client.post(
-            "/api/auth/users",
-            json={"username": "viewer-i10", "password": "Viewer-Test-20260714!", "display_name": "Viewer", "role_code": "viewer"},
-            headers=headers,
-        )
+        created = create_test_account(client, headers=headers, payload={"username": "viewer-i10", "password": "Viewer-Test-20260714!", "display_name": "Viewer", "role_code": "viewer"})
         assert created.status_code == 200, created.text
         login = client.post("/api/auth/login", json={"username": "viewer-i10", "password": "Viewer-Test-20260714!"})
         viewer_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}

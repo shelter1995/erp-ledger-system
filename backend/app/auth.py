@@ -6,7 +6,7 @@ import hmac
 import json
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from fastapi import Depends, HTTPException, Request
@@ -15,6 +15,8 @@ from sqlalchemy import text
 
 from .config import settings
 from .db import db
+from .authorization import PERMISSIONS, route_permissions
+from .authorization_migration import prepare_schema
 
 Permission = str
 ALL_PERMISSIONS = {
@@ -32,6 +34,8 @@ ALL_PERMISSIONS = {
     "ledger_import",
 }
 
+ALL_PERMISSIONS |= PERMISSIONS
+
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {
     "admin": set(ALL_PERMISSIONS),
     "order_entry": {"order_entry"},
@@ -40,6 +44,8 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
     "viewer": set(),
 }
 
+ROLE_PERMISSIONS.update({'super_admin': set(PERMISSIONS), 'ledger_admin': set(), 'department_user': set()})
+
 ROLE_LABELS: dict[str, str] = {
     "admin": "管理员",
     "order_entry": "订单录入员",
@@ -47,6 +53,8 @@ ROLE_LABELS: dict[str, str] = {
     "sales_entry": "销售录入员",
     "viewer": "查看员",
 }
+
+ROLE_LABELS.update({'super_admin': '系统超级管理员', 'ledger_admin': '台账管理员', 'department_user': '部门账号'})
 
 security = HTTPBearer(auto_error=False)
 
@@ -61,9 +69,20 @@ class CurrentUser:
     department_scope: list[str]
     department_can_view: bool
     department_can_entry: bool
+    account_type: str = 'department_user'
+    scope_mode: str | None = None
+    department_ids: list[int] = field(default_factory=list)
+    home_department_id: int | None = None
+    log_scope: str = 'self'
+    must_change_password: bool = False
+    auth_version: int = 1
+    authorization_version: int = 0
+    avatar_data: str | None = None
 
 
 def has_permission(role_code: str, permission: Permission, permissions: list[str] | set[str] | None = None) -> bool:
+    if role_code == 'super_admin':
+        return permission in ALL_PERMISSIONS
     granted = set(permissions) if permissions is not None else ROLE_PERMISSIONS.get(role_code, set())
     return permission in granted
 
@@ -99,9 +118,13 @@ def apply_department_scope(
     user: CurrentUser,
     column_name: str = "department",
 ) -> None:
-    if has_permission(user.role_code, "system_admin", user.permissions):
+    if user.account_type == 'super_admin' or user.scope_mode == 'all':
         return
-    if not user.department_scope:
+    if user.scope_mode == 'none' or (user.scope_mode == 'selected' and not user.department_scope):
+        conditions.append('1=0')
+        return
+    if user.scope_mode is None and not user.department_scope:
+        conditions.append('1=0')
         return
     if not user.department_can_view:
         conditions.append("1=0")
@@ -115,15 +138,17 @@ def apply_department_scope(
 
 
 def can_access_department(user: CurrentUser, department: str | None, require_entry: bool = False) -> bool:
-    if has_permission(user.role_code, "system_admin", user.permissions):
+    if user.account_type == 'super_admin' or user.scope_mode == 'all':
         return True
-    if not user.department_scope:
-        return True
-    if require_entry and not user.department_can_entry:
+    if user.scope_mode == 'none' or not user.department_scope:
         return False
-    if not require_entry and not user.department_can_view:
-        return False
+    if user.authorization_version == 0:
+        if require_entry and not user.department_can_entry:
+            return False
+        if not require_entry and not user.department_can_view:
+            return False
     return bool(department and department in user.department_scope)
+
 
 
 def hash_password(password: str) -> str:
@@ -146,6 +171,8 @@ def verify_password(password: str, stored_hash: str) -> bool:
 def create_access_token(user: CurrentUser, expires_in_seconds: int = 12 * 60 * 60) -> str:
     payload = {
         "sub": user.username,
+        "uid": user.id,
+        "av": user.auth_version,
         "role": user.role_code,
         "exp": int(time.time()) + expires_in_seconds,
     }
@@ -211,10 +238,13 @@ def migrate_ledger_import_permission(conn) -> None:
 def ensure_default_admin() -> None:
     with db() as conn:
         _ensure_user_permission_columns(conn)
+        prepare_schema(conn)
         existing = conn.execute(
             text("SELECT password_hash FROM erp_user WHERE username = 'admin'")
         ).mappings().first()
-        if not existing:
+        if not existing and not conn.execute(text('SELECT COUNT(*) FROM erp_user')).scalar():
+            if len(settings.default_admin_password) < 12:
+                raise RuntimeError('新系统初始管理员密码至少需要 12 个字符')
             conn.execute(
                 text(
                     """
@@ -231,44 +261,35 @@ def ensure_default_admin() -> None:
                     "password_hash": hash_password(settings.default_admin_password),
                     "display_name": "系统管理员",
                     "role_code": "admin",
-                    "permissions_json": encode_json_list(sorted(ALL_PERMISSIONS)),
+                    "permissions_json": encode_json_list(sorted(PERMISSIONS)),
                     "department_scope_json": encode_json_list([]),
                 },
             )
+            conn.execute(text("UPDATE erp_user SET account_type='super_admin',role_code='super_admin',scope_mode='all',log_scope='all',authorization_version=1,must_change_password=1 WHERE username='admin'"))
         migrate_ledger_import_permission(conn)
+
+
+def user_from_row(conn, row) -> CurrentUser:
+    if not row.get('authorization_version'):
+        raise HTTPException(403, '账号权限尚未迁移，请由管理员核对账号映射后切换')
+    kind = row['account_type']
+    ids = list(conn.execute(text('SELECT department_id FROM user_department WHERE user_id=:id'), {'id': row['id']}).scalars())
+    aliases = list(conn.execute(text('SELECT a.name FROM department_alias a JOIN user_department ud ON ud.department_id=a.department_id JOIN department d ON d.id=a.department_id WHERE ud.user_id=:id AND d.is_active=1'), {'id': row['id']}).scalars())
+    return CurrentUser(avatar_data=row.get('avatar_data'), id=int(row['id']), username=row['username'], display_name=row['display_name'], role_code=kind,
+        account_type=kind, permissions=sorted(PERMISSIONS) if kind == 'super_admin' else normalize_permissions(kind, parse_json_list(row['permissions_json'])),
+        department_scope=aliases, department_can_view=True, department_can_entry=True,
+        scope_mode=row['scope_mode'], department_ids=ids, home_department_id=row['home_department_id'],
+        log_scope=row['log_scope'], must_change_password=bool(row['must_change_password']),
+        auth_version=int(row['auth_version']), authorization_version=int(row['authorization_version']))
 
 
 def current_user_from_token(token: str) -> CurrentUser:
     payload = decode_access_token(token)
-    username = payload.get("sub")
-    if not username:
-        raise HTTPException(status_code=401, detail="Invalid token")
     with db() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT id, username, display_name, role_code, permissions_json,
-                       department_scope_json, department_can_view, department_can_entry
-                FROM erp_user
-                WHERE username = :username AND is_active = 1
-                """
-            ),
-            {"username": username},
-        ).mappings().first()
-    if row is None:
-        raise HTTPException(status_code=401, detail="User disabled or not found")
-    role_code = str(row["role_code"])
-    permissions = normalize_permissions(role_code, parse_json_list(row["permissions_json"]) if row["permissions_json"] else None)
-    return CurrentUser(
-        id=int(row["id"]),
-        username=str(row["username"]),
-        display_name=str(row["display_name"]),
-        role_code=role_code,
-        permissions=permissions,
-        department_scope=parse_json_list(row["department_scope_json"]),
-        department_can_view=bool(row["department_can_view"]),
-        department_can_entry=bool(row["department_can_entry"]),
-    )
+        row = conn.execute(text('SELECT * FROM erp_user WHERE id=:id AND is_active=1'), {'id': payload.get('uid')}).mappings().first()
+        if row is None or payload.get('av') != row['auth_version'] or payload.get('sub') != row['username']:
+            raise HTTPException(401, '登录已失效，请重新登录')
+        return user_from_row(conn, row)
 
 
 def get_current_user(
@@ -279,6 +300,11 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Not authenticated")
     user = current_user_from_token(credentials.credentials)
     request.state.current_user = user
+    if user.must_change_password and request.url.path not in {'/api/auth/me', '/api/auth/change-password', '/api/auth/logout'}:
+        raise HTTPException(403, detail={'code': 'PASSWORD_CHANGE_REQUIRED', 'message': '请先修改临时密码'})
+    for permission in route_permissions(request.url.path, request.method):
+        if not has_permission(user.role_code, permission, user.permissions):
+            raise HTTPException(403, '没有该模块权限')
     return user
 
 
@@ -286,6 +312,8 @@ def require_permission(permission: Permission) -> Callable[[CurrentUser], Curren
     def dependency(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
         if not has_permission(user.role_code, permission, user.permissions):
             raise HTTPException(status_code=403, detail="Permission denied")
+        if permission in {'data_replace', 'backups_restore'} and user.scope_mode != 'all' and user.account_type != 'super_admin':
+            raise HTTPException(403, '此操作要求明确授权全部门')
         return user
 
     return dependency
@@ -296,12 +324,16 @@ def current_user_payload(user: CurrentUser) -> dict:
         "id": user.id,
         "username": user.username,
         "display_name": user.display_name,
+        "avatar_data": user.avatar_data,
         "role_code": user.role_code,
         "role_label": ROLE_LABELS.get(user.role_code, user.role_code),
         "permissions": user.permissions,
         "department_scope": user.department_scope,
         "department_can_view": user.department_can_view,
         "department_can_entry": user.department_can_entry,
+        "account_type": user.account_type, "scope_mode": user.scope_mode,
+        "department_ids": user.department_ids, "home_department_id": user.home_department_id,
+        "log_scope": user.log_scope, "must_change_password": user.must_change_password,
     }
 
 

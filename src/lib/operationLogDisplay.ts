@@ -24,6 +24,7 @@ export interface OperationLogChangeGroup {
 }
 
 const FIELD_LABELS: Record<string, string> = {
+  name: '部门名称', account_type: '账号类型', scope_mode: '数据范围', log_scope: '日志范围', home_department: '所属部门', department_names: '授权部门', department_ids: '授权部门编号', home_department_id: '所属部门编号', avatar_changed: '头像',
   project_code: '项目编号',
   order_no: '销售订单号',
   amount_type: '全额/净额',
@@ -147,6 +148,7 @@ const UPDATE_ENTITY_LABELS: Record<string, string> = {
   batch_update_basic_order: '基本信息',
   batch_update_purchases: '采购信息',
   batch_update_sales: '销售信息',
+  update_profile: '个人资料', update_department: '部门',
   update_order: '订单',
   update_purchase_summary: '采购基础信息',
   update_purchase_contract: '采购合同',
@@ -179,6 +181,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 const IGNORED_FIELDS = new Set([
+  'auth_version', 'authorization_version', 'must_change_password', 'last_login_at', 'password_hash', 'avatar_data',
   'id',
   'project_id',
   'sales_order_id',
@@ -204,7 +207,12 @@ function parseAuditDetail(detail: string): AuditDetail | null {
   try {
     const parsed = JSON.parse(detail) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    return parsed as AuditDetail;
+    const audit=parsed as AuditDetail;
+    if(isSnapshot(audit.before)&&isSnapshot(audit.after)&&'permissions' in audit.after&&'account_type' in audit.after) {
+      audit.before=Object.fromEntries(Object.entries(audit.before).filter(([key])=>key==='username'||Object.hasOwn(audit.after!,key)));
+      if(!Object.hasOwn(audit.after,'username')&&audit.before.username) audit.after={...audit.after,username:audit.before.username};
+    }
+    return audit;
   } catch {
     return null;
   }
@@ -219,7 +227,17 @@ function valuesMatch(before: unknown, after: unknown) {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
+const permissionLabels: Record<string,string> = {dashboard_view:'仪表盘查看',ledger_view:'台账查看',maintenance_view:'数据维护页面',ledger_import:'台账批量导入',data_replace:'替换全部业务数据',department_transfer:'跨部门转移',accounts_view:'账号权限页面',accounts_create:'创建账号',accounts_update:'配置账号权限',accounts_disable:'启停账号',logs_view:'操作日志查看',backups_view:'备份恢复页面',backups_create:'创建备份',backups_verify:'校验备份',backups_restore:'恢复业务数据',system_admin:'旧版系统管理'};
+for (const [prefix,label] of [['order','基本信息'],['sales','销售信息'],['purchase','采购信息']]) {
+  for (const [action,text] of [['view','查看'],['entry','新增'],['edit','修改'],['delete','删除']]) permissionLabels[prefix+'_'+action]=label+text;
+}
+
 function formatValue(value: unknown, fieldName = '') {
+  const enums:Record<string,Record<string,string>>={account_type:{super_admin:'系统超级管理员',ledger_admin:'台账管理员',department_user:'部门账号'},scope_mode:{all:'全部门',selected:'指定部门',none:'无业务数据'},log_scope:{self:'本人',department:'授权部门',all:'全部'},is_active:{'1':'启用','0':'停用',true:'启用',false:'停用'}};
+  if(enums[fieldName]?.[String(value)]) return enums[fieldName][String(value)];
+  if(fieldName==='avatar_changed') return value?'已更新':'未变更';
+  if(fieldName==='permissions' && Array.isArray(value)) return value.map(v=>permissionLabels[v]||v).join('、')||'无';
+
   if (value === null || value === undefined || value === '') return '空';
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (Array.isArray(value)) return value.length ? value.join('、') : '空';
@@ -235,8 +253,14 @@ function changedFields(before: AuditSnapshot, after: AuditSnapshot) {
   const keys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]));
   return keys
     .filter((key) => !IGNORED_FIELDS.has(key) && !key.endsWith('_text'))
-    .filter((key) => !valuesMatch(before[key], after[key]))
-    .map((key) => `${FIELD_LABELS[key] || `字段“${key}”`}：${formatValue(before[key], key)} → ${formatValue(after[key], key)}`);
+    .filter((key) => !valuesMatch(before[key], after[key]) && formatValue(before[key],key)!==formatValue(after[key],key))
+    .flatMap((key) => {
+      if(key==='permissions' && Array.isArray(before[key]) && Array.isArray(after[key])) {
+        const old=before[key] as string[], next=after[key] as string[];
+        return [next.filter(p=>!old.includes(p)).length?`新增权限：${formatValue(next.filter(p=>!old.includes(p)),key)}`:'',old.filter(p=>!next.includes(p)).length?`移除权限：${formatValue(old.filter(p=>!next.includes(p)),key)}`:''].filter(Boolean);
+      }
+      return [`${FIELD_LABELS[key] || `字段“${key}”`}：${formatValue(before[key], key)} → ${formatValue(after[key], key)}`];
+    });
 }
 
 function snapshotIdentifier(actionName: string, before: AuditSnapshot, after: AuditSnapshot) {
@@ -298,9 +322,32 @@ export function formatOperationLogDetails(item: OperationLogSource) {
 
 export function formatOperationLogChangeGroups(
   item: OperationLogSource,
+  departments:Record<number,string> = {},
 ): OperationLogChangeGroup[] {
   const audit = parseAuditDetail(item.detail);
-  if (!Array.isArray(audit?.batch_entries)) return [];
+  for(const snapshot of [audit?.before,audit?.after]) {
+    if(!isSnapshot(snapshot)) continue;
+    if(Array.isArray(snapshot.department_ids)&&!snapshot.department_names) {
+      snapshot.department_names=snapshot.department_ids.map(id=>departments[Number(id)]||`部门编号 ${id}`);
+      delete snapshot.department_ids;
+    }
+    if(Object.hasOwn(snapshot,'home_department_id')&&!Object.hasOwn(snapshot,'home_department')) {
+      const id=snapshot.home_department_id;
+      snapshot.home_department=id?departments[Number(id)]||`部门编号 ${id}`:null;
+      delete snapshot.home_department_id;
+    }
+  }
+  if (!Array.isArray(audit?.batch_entries)) {
+    if(!audit?.before&&isSnapshot(audit?.after)&&['create_user','update_department'].includes(item.action_name)) {
+      const changes=Object.entries(audit.after).filter(([key])=>!IGNORED_FIELDS.has(key)).map(([key,value])=>`${FIELD_LABELS[key]||key}：${formatValue(value,key)}`);
+      return [{title:'新增配置',changes}];
+    }
+    if(isSnapshot(audit?.before)&&isSnapshot(audit?.after)) {
+      const changes=changedFields(audit.before,audit.after);
+      return changes.length?[{title:snapshotIdentifier(item.action_name,audit.before,audit.after),changes}]:[];
+    }
+    return [];
+  }
 
   return audit.batch_entries.flatMap((entry, index) => {
     const before = isSnapshot(entry?.before) ? entry.before : null;
@@ -313,4 +360,14 @@ export function formatOperationLogChangeGroups(
       changes,
     }];
   });
+}
+
+/** Compact table summary; complete differences are shown in the detail dialog. */
+export function formatOperationLogSummary(item:OperationLogSource) {
+  const audit=parseAuditDetail(item.detail);
+  const groups=formatOperationLogChangeGroups(item);
+  const summary=audit?.summary?.trim();
+  if(summary) return summary;
+  if(groups.length) return `${ACTION_LABELS[item.action_name]||'修改记录'}：${groups.length} 条记录`;
+  return item.detail.trim() || ACTION_LABELS[item.action_name] || '系统操作';
 }

@@ -1,3 +1,4 @@
+import { PageSizeSelect } from './ManagementUI';
 import { api } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
 import React, { useState, useMemo } from 'react';
@@ -86,7 +87,7 @@ export default function LedgerScreen({
 
   // Pagination States
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
+  const [itemsPerPage, setItemsPerPage] = useState(5);
 
   // Form State for Adding New Item
   const [showAddModal, setShowAddModal] = useState(false);
@@ -165,7 +166,7 @@ export default function LedgerScreen({
   const paginatedLedgers = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredLedgers.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredLedgers, currentPage]);
+  }, [filteredLedgers, currentPage, itemsPerPage]);
 
   const totalPages = Math.max(1, Math.ceil(filteredLedgers.length / itemsPerPage));
   const paginationItems = getPaginationItems(totalPages);
@@ -573,7 +574,7 @@ export default function LedgerScreen({
             </button>
 
             <div className="ml-3 flex items-center gap-1 text-xs text-slate-500">
-              <span>跳转至</span>
+              <PageSizeSelect value={itemsPerPage} onChange={size=>{setItemsPerPage(size);setCurrentPage(1);}}/><span>跳转至</span>
               <input 
                 type="number" 
                 min={1} 

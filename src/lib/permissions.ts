@@ -1,4 +1,8 @@
 export type Permission =
+  | 'dashboard_view' | 'ledger_view' | 'order_view' | 'sales_view' | 'purchase_view'
+  | 'maintenance_view' | 'data_replace' | 'department_transfer'
+  | 'accounts_view' | 'accounts_create' | 'accounts_update' | 'accounts_disable'
+  | 'logs_view' | 'backups_view' | 'backups_create' | 'backups_verify' | 'backups_restore'
   | 'order_entry'
   | 'order_edit'
   | 'order_delete'
@@ -17,12 +21,19 @@ export interface AuthUser {
   id: number;
   username: string;
   displayName: string;
+  avatarData?: string | null;
   roleCode: RoleCode | string;
   roleLabel: string;
   permissions: Permission[];
   departmentScope: string[];
   departmentCanView: boolean;
   departmentCanEntry: boolean;
+  accountType?: 'department_user' | 'ledger_admin' | 'super_admin';
+  scopeMode?: 'none' | 'selected' | 'all';
+  departmentIds?: number[];
+  homeDepartmentId?: number | null;
+  logScope?: 'self' | 'department' | 'all';
+  mustChangePassword?: boolean;
 }
 
 export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
@@ -73,7 +84,7 @@ export function getRolePermissions(roleCode: string): Permission[] {
 
 export function hasPermission(user: Pick<AuthUser, 'roleCode' | 'permissions'> | null, permission: Permission) {
   if (!user) return false;
-  return user.permissions.includes(permission);
+  return user.roleCode === 'super_admin' || user.permissions.includes(permission);
 }
 
 const KNOWN_ROLE_CODES: RoleCode[] = ['admin', 'order_entry', 'purchase_entry', 'sales_entry', 'viewer'];
@@ -102,23 +113,46 @@ export function normalizeUser(raw: {
   id: number;
   username: string;
   display_name: string;
+  avatar_data?: string | null;
   role_code: string;
   role_label?: string;
   permissions?: string[];
   department_scope?: string[];
   department_can_view?: boolean;
   department_can_entry?: boolean;
+  account_type?: 'department_user' | 'ledger_admin' | 'super_admin';
+  scope_mode?: 'none' | 'selected' | 'all';
+  department_ids?: number[];
+  home_department_id?: number | null;
+  log_scope?: 'self' | 'department' | 'all';
+  must_change_password?: boolean;
 }): AuthUser {
   const roleCode = raw.role_code as RoleCode;
   return {
     id: raw.id,
     username: raw.username,
     displayName: raw.display_name,
+    avatarData: raw.avatar_data,
     roleCode,
     roleLabel: raw.role_label || ROLE_LABELS[roleCode] || raw.role_code,
     permissions: (raw.permissions || getRolePermissions(raw.role_code)) as Permission[],
     departmentScope: raw.department_scope || [],
     departmentCanView: Boolean(raw.department_can_view),
     departmentCanEntry: Boolean(raw.department_can_entry),
+    accountType: raw.account_type, scopeMode: raw.scope_mode, departmentIds: raw.department_ids,
+    homeDepartmentId: raw.home_department_id, logScope: raw.log_scope, mustChangePassword: raw.must_change_password,
   };
+}
+
+export const PAGE_PERMISSIONS: Record<string, Permission | null> = {
+  dashboard: 'dashboard_view', ledger: 'ledger_view', orders: 'order_view', sales: 'sales_view', purchases: 'purchase_view',
+  maintenance: 'maintenance_view', accounts: 'accounts_view', logs: 'logs_view', backups: 'backups_view', profile: null,
+};
+export function canOpenPage(user: AuthUser | null, page: string): boolean {
+  if (!user || !(page in PAGE_PERMISSIONS)) return false;
+  if (user.mustChangePassword) return page === 'profile';
+  return PAGE_PERMISSIONS[page] === null || hasPermission(user, PAGE_PERMISSIONS[page]!);
+}
+export function firstAllowedPage(user: AuthUser): string {
+  return Object.keys(PAGE_PERMISSIONS).find(page => canOpenPage(user, page)) || 'profile';
 }

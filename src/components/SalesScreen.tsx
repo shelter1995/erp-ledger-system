@@ -1,3 +1,4 @@
+import { PageSizeSelect } from './ManagementUI';
 import { editingApi } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -106,7 +107,7 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
     receipt_ratio: '',
   });
 
-  const itemsPerPage = 5;
+  const [itemsPerPage, setItemsPerPage] = useState(5);
 
   const filteredSales = useMemo(() => {
     return applySalesFilters(sales, submittedFilters);
@@ -121,7 +122,7 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
   const paginatedSales = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredSales.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredSales, currentPage]);
+  }, [filteredSales, currentPage, itemsPerPage]);
 
   const totalPages = Math.max(1, Math.ceil(filteredSales.length / itemsPerPage));
   const paginationItems = getPaginationItems(totalPages);
@@ -473,13 +474,6 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
       </section>
 
       <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-        <div className="p-5 border-b border-slate-200 flex justify-between items-center">
-          <h3 className="font-semibold text-slate-900 text-xs flex items-center gap-1.5">
-            <ReceiptText className="w-4 h-4 text-blue-600" />
-            <span>销售列表</span>
-          </h3>
-        </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse table-fixed min-w-[2128px]">
             <thead>
@@ -588,7 +582,7 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
               <ChevronRight className="w-4 h-4" />
             </button>
             <div className="ml-3 flex items-center gap-1 text-xs text-slate-500">
-              <span>跳转至</span>
+              <PageSizeSelect value={itemsPerPage} onChange={size=>{setItemsPerPage(size);setCurrentPage(1);}}/><span>跳转至</span>
               <input type="number" min={1} max={totalPages} value={currentPage} onChange={(e) => {
                 const val = parseInt(e.target.value);
                 if (val >= 1 && val <= totalPages) setCurrentPage(val);

@@ -22,6 +22,8 @@ server_engine = create_engine(settings.server_url, pool_pre_ping=True, future=Tr
 @contextmanager
 def db() -> Iterator[Connection]:
     with engine.begin() as conn:
+        from .account_service import revalidate_write
+        revalidate_write(conn)
         yield conn
 
 

@@ -443,6 +443,9 @@ def import_excel(
             if not preserve_source:
                 _reject_multi_value_chain(_as_text(_row_value(row, position(5, 5))),excel_row_no,label="客户经理",column="客户经理")
             department = _as_text(_row_value(row, position(3, 3)))
+            if user and user.authorization_version == 1 and department:
+                from .department_service import validate_name
+                validate_name(conn, department)
             if user and not can_access_department(user, department, require_entry=True):
                 raise PermissionError(f"无权向部门“{department or '空'}”导入数据")
 

@@ -24,6 +24,7 @@ def test_startup_preserves_existing_admin_status_and_permissions(monkeypatch) ->
 
     monkeypatch.setattr(auth, "db", fake_db)
     monkeypatch.setattr(auth, "_ensure_user_permission_columns", lambda conn: None)
+    monkeypatch.setattr(auth, "prepare_schema", lambda conn: None)
     monkeypatch.setattr(auth, "migrate_ledger_import_permission", lambda conn: None)
 
     auth.ensure_default_admin()

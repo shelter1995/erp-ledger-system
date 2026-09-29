@@ -443,6 +443,7 @@ def create_session(
     conn: Connection,
     *,
     user_id: int,
+    user=None,
     file_name: str,
     content: bytes,
     sheet_index: int = 0,
@@ -470,6 +471,15 @@ def create_session(
             continue  # 空行不进会话
         parsed_rows.append((values, parse_row(values, excel_row_no=index, sheet_name=sheet_name)))
     workbook.close()
+    if user is not None:
+        from .auth import can_access_department
+        from .department_service import validate_name
+        for values, parsed in parsed_rows:
+            department = str(values[2]).strip() if len(values)>2 and values[2] is not None else None
+            if not can_access_department(user, department, True):
+                raise HTTPException(403, '文件包含未授权部门，未创建预检会话')
+            if user.authorization_version == 1:
+                validate_name(conn, department)
     rows = [parsed for _, parsed in parsed_rows]
     if len(rows) > MAX_PREVIEW_ROWS:
         raise HTTPException(status_code=413, detail=f"预检单次最多 {MAX_PREVIEW_ROWS} 行，请拆分文件")

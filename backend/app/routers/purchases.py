@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from ..department_service import department_filter
 from sqlalchemy import text
 
 from ..audit import write_batch_operation_log, write_operation_log
@@ -158,7 +159,7 @@ def list_purchases(
         conditions.append(manager_match() if include_history_manager else "account_manager LIKE :manager")
         params["manager"] = f"%{manager}%"
     if department:
-        conditions.append("department = :department")
+        conditions.append(department_filter("department"))
         params["department"] = department
     if supplier_name:
         conditions.append("supplier_name LIKE :supplier_name")
@@ -308,7 +309,7 @@ def get_purchase_detail(order_line_id: int, user: CurrentUser = Depends(get_curr
                        purchase_contract_signed_amount, total_finance_checked,
                        total_finance_paid, financial_accounts_payable,
                        total_paid, accounts_payable, gross_profit_no_tax,
-                       gross_profit_margin_no_tax, gross_profit
+                       gross_profit_margin_no_tax, gross_profit, tax_difference, tax_refund
                 FROM v_order_line_finance
                 WHERE order_line_id = :order_line_id
                 """
@@ -318,7 +319,7 @@ def get_purchase_detail(order_line_id: int, user: CurrentUser = Depends(get_curr
         if summary is None:
             raise HTTPException(status_code=404, detail="Purchase order line not found")
         if not can_access_department(user, str(summary["department"]) if summary["department"] is not None else None):
-            raise HTTPException(status_code=403, detail="Department permission denied")
+            raise HTTPException(status_code=404, detail="记录不存在")
 
         contracts = conn.execute(
             text(
@@ -933,7 +934,7 @@ def _ensure_order_line_in_conn(
         str(row["department"]) if row["department"] is not None else None,
         True,
     ):
-        raise HTTPException(status_code=403, detail=f"无权修改订单明细 {order_line_id}")
+        raise HTTPException(status_code=404, detail="记录不存在")
     return dict(row)
 
 
@@ -1141,6 +1142,10 @@ def _upsert_order_line_record(
     order_line_id: int,
     data: dict[str, object],
 ) -> None:
+    if table_name == 'delivery_record':
+        from ..source_delivery import preserve_multiple_deliveries
+        if preserve_multiple_deliveries(conn, order_line_id, data):
+            return
     record_id = conn.execute(
         text(
             f"""
@@ -1227,7 +1232,7 @@ def _ensure_order_line(order_line_id: int, user: CurrentUser, require_entry: boo
     if row is None:
         raise HTTPException(status_code=404, detail="Order line not found")
     if not can_access_department(user, str(row["department"]) if row["department"] is not None else None, require_entry):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
 
 
 def _payload_dict(payload: BaseModel) -> dict:
@@ -1255,7 +1260,7 @@ def _ensure_detail_record(table_name: str, record_id: int, user: CurrentUser, re
     if row is None:
         raise HTTPException(status_code=404, detail="Purchase record not found")
     if not can_access_department(user, str(row["department"]) if row["department"] is not None else None, require_entry):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
     return int(row["order_line_id"])
 
 

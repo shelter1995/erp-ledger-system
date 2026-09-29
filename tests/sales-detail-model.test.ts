@@ -199,4 +199,11 @@ assert.deepEqual(buildLedgerPaymentRows(detailOrders, detailPurchases, detailSal
   },
 ]);
 
+assert.equal(buildLedgerPaymentRows([
+  { ...detailOrders[0], grossProfit: '55.003' },
+], detailPurchases, detailSales)[0].grossProfit, '55.00');
+assert.equal(buildLedgerPaymentRows([
+  { ...detailOrders[0], orderValue: '100', purchaseAmount: '40', taxAmount: '8', taxRefund: '3' },
+], detailPurchases, detailSales)[0].grossProfit, '55.00');
+
 console.log('sales detail model tests passed');

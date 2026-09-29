@@ -15,7 +15,7 @@ from .config import settings, validate_security_settings
 from .auth import current_user_from_token, ensure_default_admin
 from .db import active_table_count, db, initialize_schema
 from .audit import failed_mutation_metadata, failure_reason, write_operation_log
-from .routers import history, auth, dashboard, ledgers, orders, purchases, sales, system
+from .routers import history, accounts as auth, departments, summaries, dashboard, ledgers, orders, purchases, sales, system
 from .validation import validation_error_message
 from .import_report import ImportReportError
 from .import_batches import router as import_batches_router
@@ -118,6 +118,8 @@ app.add_middleware(
 
 app.include_router(dashboard.router)
 app.include_router(auth.router)
+app.include_router(departments.router)
+app.include_router(summaries.router)
 app.include_router(ledgers.router)
 app.include_router(orders.router)
 app.include_router(history.router)

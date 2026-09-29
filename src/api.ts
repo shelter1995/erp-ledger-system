@@ -12,7 +12,7 @@ export function combineEditContexts(contexts: Array<EditContext | undefined>): E
   }
   return result;
 }
-export interface BackendHistory { edit_context?: EditContext; order_number_history?: string[]; manager_history?: string[] }
+export interface BackendHistory { edit_context?: EditContext; order_number_history?: string[]; order_number_path?: string[]; manager_history?: string[] }
 export interface HistoryContext {
   edit_context?: EditContext;
   current: { order_line_id: number; sales_order_id: number; project_id: number; project_code: string; order_no: string; account_manager: string | null; department: string | null; branch_company: string | null; team_level3_name: string | null };
@@ -141,6 +141,8 @@ export interface BackendOrderRecord extends BackendHistory {
   accounts_receivable?: MoneyValue | null;
   accounts_payable?: MoneyValue | null;
   gross_profit?: MoneyValue | null;
+  tax_difference?: MoneyValue | null;
+  tax_refund?: MoneyValue | null;
   close_status?: string | null;
 }
 
@@ -314,6 +316,15 @@ export interface BackendSalesDetail {
   contracts: BackendSalesContract[];
   invoices: BackendSalesInvoice[];
   receipts: BackendSalesReceipt[];
+  deliveries?: Array<{
+    id: number;
+    order_line_id: number;
+    goods_name: string | null;
+    delivery_date: string | null;
+    delivery_quantity: string | null;
+    delivery_value: string | null;
+    delivery_revenue_no_tax: string | null;
+  }>;
 }
 
 export interface BackendOperationLog {
@@ -336,6 +347,7 @@ export interface BackendBackupInfo {
 }
 
 export interface BackendAuthUser {
+  avatar_data?: string | null;
   id: number;
   username: string;
   display_name: string;
@@ -680,3 +692,52 @@ export function editingApi(editContext?: EditContext) {
 };
 }
 export const api = editingApi();
+
+export interface Department { id: number; name: string; is_active: boolean }
+export interface AccountPolicy {
+  account_type: 'department_user' | 'ledger_admin' | 'super_admin';
+  home_department_id: number | null; scope_mode: 'none' | 'selected' | 'all';
+  department_ids: number[]; permissions: string[]; log_scope: 'self' | 'department' | 'all';
+}
+export interface AccountRecord extends AccountPolicy {
+  id: number; username: string; display_name: string; is_active: boolean; must_change_password: boolean;
+}
+export interface OrderSummary {
+  total_finance_checked:string; delivery_accounts_receivable:string; invoice_accounts_receivable:string;
+  order_no:string; status:string; department:string; account_manager:string; customer_unit_name:string;
+  order_value:string; purchase_amount:string; gross_profit:string; total_received:string; total_paid:string; accounts_receivable:string; accounts_payable:string; delivery_value:string; delivery_cost:string; sales_invoice_amount:string;
+}
+export interface SummaryItem {
+  total_finance_checked:string; delivery_accounts_receivable:string; invoice_accounts_receivable:string;
+  orders:OrderSummary[];
+  project_code: string; project_name: string; department: string; account_manager: string; customer_unit_name: string;
+  order_count: number; order_value: string; purchase_amount: string; gross_profit: string;
+  total_received: string; total_paid: string; accounts_receivable: string; accounts_payable: string;
+  delivery_value: string; delivery_cost: string; sales_invoice_amount: string;
+}
+export interface AggregateData {
+  items: SummaryItem[];
+  metrics: import('./lib/dashboardMetrics').DashboardMetrics;
+  trends: import('./lib/dashboardMetrics').DashboardTrendItem[];
+  ranking: import('./lib/dashboardMetrics').DashboardRankingItem[];
+  latestModifiedAt: string;
+}
+export const accountApi = {
+  saveProfile: (display_name:string,avatar_data:string|null) => request<{user:BackendAuthUser}>('/auth/profile',{method:'PUT',body:JSON.stringify({display_name,avatar_data})}),
+  logs: (offset:number,limit=20) => request<PageResult<BackendOperationLog>>('/logs'+query({offset,limit})),
+  backups: (offset:number,limit=20) => request<PageResult<BackendBackupInfo>>('/backups'+query({offset,limit})),
+  orderOptions: (module:'sales'|'purchases') => request<{items:BackendOrderRecord[]}>('/'+module+'/order-options'),
+  departments: () => request<{items: Department[]}>('/departments'),
+  saveDepartment: (name: string, is_active: boolean, id?: number) => request('/departments' + (id ? '/' + id : ''), {method: id ? 'PUT':'POST',body:JSON.stringify({name,is_active})}),
+  users: (status='active') => request<{items:AccountRecord[]}>('/auth/users'+query({status})),
+  create: (data: AccountPolicy & {username:string;display_name:string;password:string}) => request('/auth/users',{method:'POST',body:JSON.stringify(data)}),
+  update: (id:number,data:AccountPolicy) => request('/auth/users/'+id,{method:'PUT',body:JSON.stringify(data)}),
+  disable: (id:number) => request('/auth/users/'+id,{method:'DELETE'}),
+  restore: (id:number) => request('/auth/users/'+id+'/restore',{method:'POST'}),
+  reset: (id:number,password:string) => request('/auth/users/'+id+'/reset-password',{method:'POST',body:JSON.stringify({password})}),
+  changePassword: (old_password:string,new_password:string,confirm_password:string) => request('/auth/change-password',{method:'POST',body:JSON.stringify({old_password,new_password,confirm_password})}),
+  logout: () => request('/auth/logout',{method:'POST'}),
+  dashboard: (params:Record<string,string>={}) => request<Omit<AggregateData,'items'>>('/dashboard/data'+query(params)),
+  summary: (params:Record<string,string>={}) => request<AggregateData>('/ledgers/summary'+query(params)),
+  exportSummary: (params:Record<string,string>={}) => requestBlob('/ledgers/export-summary'+query(params)),
+};

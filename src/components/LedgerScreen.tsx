@@ -1,8 +1,9 @@
+import { PageSizeSelect } from './ManagementUI';
 import { api } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
 import React, { useState, useMemo } from 'react';
 import { 
-  FileOutput,
+  Download,
   Search, 
   RotateCcw, 
   ChevronLeft, 
@@ -86,7 +87,7 @@ export default function LedgerScreen({
 
   // Pagination States
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
+  const [itemsPerPage, setItemsPerPage] = useState(5);
 
   // Form State for Adding New Item
   const [showAddModal, setShowAddModal] = useState(false);
@@ -165,7 +166,7 @@ export default function LedgerScreen({
   const paginatedLedgers = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredLedgers.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredLedgers, currentPage]);
+  }, [filteredLedgers, currentPage, itemsPerPage]);
 
   const totalPages = Math.max(1, Math.ceil(filteredLedgers.length / itemsPerPage));
   const paginationItems = getPaginationItems(totalPages);
@@ -282,7 +283,7 @@ export default function LedgerScreen({
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">项目台账总览</h1>
           <p className="text-sm text-slate-500 font-sans mt-1">查看项目销售订单、采购金额、回款与应收应付汇总。</p>
         </div>
-        <div className="flex items-center gap-2 self-start sm:self-center">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end sm:self-center">
           <button
             type="button"
             onClick={handleDownloadTemplate}
@@ -295,7 +296,7 @@ export default function LedgerScreen({
             onClick={handleExportExcel}
             className="flex items-center gap-1.5 px-3.5 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg shadow-sm transition-all text-xs font-semibold"
           >
-            <FileOutput className="w-4 h-4 text-blue-600" />
+            <Download className="w-4 h-4 text-blue-600" />
             <span>导出台账</span>
           </button>
           <button type="button" className="px-3 py-2 text-xs border rounded-lg" onClick={async () => { try { downloadBlob(await api.exportHistory(ledgerFiltersToQuery(submittedFilters)), '历史及期次明细.xlsx'); } catch(e) { alert(e instanceof Error ? e.message : '导出失败'); } }}>导出历史及全部期次</button>
@@ -573,7 +574,7 @@ export default function LedgerScreen({
             </button>
 
             <div className="ml-3 flex items-center gap-1 text-xs text-slate-500">
-              <span>跳转至</span>
+              <PageSizeSelect value={itemsPerPage} onChange={size=>{setItemsPerPage(size);setCurrentPage(1);}}/><span>跳转至</span>
               <input 
                 type="number" 
                 min={1} 

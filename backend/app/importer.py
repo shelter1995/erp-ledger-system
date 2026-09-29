@@ -24,6 +24,7 @@ from .ledger_history import (
 from .legacy_ledger_parser import parse_name_sequence
 from .line_identity import find_duplicate_line
 from .financial_calculations import refresh_line
+from .profit_calculations import profit_inputs_from_archive
 from .ledger_excel import SAMPLE_ORDER_NO, SAMPLE_PROJECT_CODE, TEMPLATE_HEADERS, is_template_sample_row, standard_template_version
 from .validation import validate_business_date, Money, PreciseNumber
 from pydantic import TypeAdapter, ValidationError
@@ -322,6 +323,7 @@ def import_excel(
     strict_template: bool = False,
     line_id_map: dict[int, int] | None = None,
     preserve_source: bool = False,
+    source_archives: dict[int, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     workbook_path: Path | None = None
     if workbook_bytes is None:
@@ -420,14 +422,19 @@ def import_excel(
         if success_rows + failed_rows >= 20000:
             raise ValueError('单次导入最多20000条业务行，请按完整项目分批')
 
-        row_dict = {
-            str(headers[i] or f"column_{i + 1}"): _json_default(value)
-            for i, value in enumerate(row)
-        }
-        raw_json = json.dumps(row_dict, ensure_ascii=False, default=_json_default)
-        row_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
-        if preserve_source:
-            row_hash = hashlib.sha256((str(excel_row_no)+':'+raw_json).encode('utf-8')).hexdigest()
+        archive = source_archives.get(excel_row_no) if source_archives else None
+        if archive:
+            raw_json = archive['raw_json']
+            row_hash = archive['row_hash']
+        else:
+            row_dict = {
+                str(headers[i] or f"column_{i + 1}"): _json_default(value)
+                for i, value in enumerate(row)
+            }
+            raw_json = json.dumps(row_dict, ensure_ascii=False, default=_json_default)
+            row_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+            if preserve_source:
+                row_hash = hashlib.sha256((str(excel_row_no)+':'+raw_json).encode('utf-8')).hexdigest()
 
         try:
             if not preserve_source:
@@ -436,6 +443,9 @@ def import_excel(
             if not preserve_source:
                 _reject_multi_value_chain(_as_text(_row_value(row, position(5, 5))),excel_row_no,label="客户经理",column="客户经理")
             department = _as_text(_row_value(row, position(3, 3)))
+            if user and user.authorization_version == 1 and department:
+                from .department_service import validate_name
+                validate_name(conn, department)
             if user and not can_access_department(user, department, require_entry=True):
                 raise PermissionError(f"无权向部门“{department or '空'}”导入数据")
 
@@ -562,6 +572,8 @@ def import_excel(
             sub_project_id, sub_project_conflicts = _find_or_create_sub_project(
                 conn, sales_order_id, row, position, project_name, excel_row_no
             )
+            if preserve_source:
+                sub_project_conflicts = [issue for issue in sub_project_conflicts if not issue.startswith(('区域平台（', '客户单位（', '最终用户（'))]
             if sub_project_conflicts:
                 raise ValueError(
                     f"第 {excel_row_no} 行订单 {order_no} 的子项目“{project_name or '（空名称）'}”已在台账中，"
@@ -573,11 +585,15 @@ def import_excel(
             sales_tax_rate = _as_tax_rate(_row_value(row, position(19)), row_cells[position(19) - 1].number_format) if latest_layout else None
             sales_unit_price_no_tax = _as_decimal(_row_value(row, position(20, 19)))
             sales_unit_price = _as_decimal(_row_value(row, position(21, 20)))
-            sales_unit_price, revenue_no_tax, order_value = _calculated_prices(
-                quantity, sales_tax_rate, sales_unit_price_no_tax, sales_unit_price
-            )
-            revenue_no_tax = revenue_no_tax if revenue_no_tax is not None else _as_decimal(_row_value(row, position(22, 21)))
-            order_value = order_value if order_value is not None else _as_decimal(_row_value(row, position(23, 22)))
+            if preserve_source:
+                revenue_no_tax = _as_decimal(_row_value(row, position(22, 21)))
+                order_value = _as_decimal(_row_value(row, position(23, 22)))
+            else:
+                sales_unit_price, revenue_no_tax, order_value = _calculated_prices(
+                    quantity, sales_tax_rate, sales_unit_price_no_tax, sales_unit_price
+                )
+                revenue_no_tax = revenue_no_tax if revenue_no_tax is not None else _as_decimal(_row_value(row, position(22, 21)))
+                order_value = order_value if order_value is not None else _as_decimal(_row_value(row, position(23, 22)))
 
             # 判重限定在同一子项目内：物资名称、规格、销售单价、数量、采购厂商五项组合唯一。
             # 跨子项目、跨订单、跨框架允许五项完全相同。
@@ -595,17 +611,26 @@ def import_excel(
                     "同名同规格同数量同单价同采购厂商的明细已存在"
                 )
 
+            profit_inputs = profit_inputs_from_archive(raw_json, source_preserved=preserve_source)
             order_line_id = _execute_scalar(
                 conn,
                 """
                 INSERT INTO order_line
                   (sales_order_id, sub_project_id, raw_row_id, source_excel_row_no, project_name,
                    goods_name, specification_model, unit_name, quantity, sales_tax_rate,
-                   sales_unit_price_no_tax, sales_unit_price, revenue_no_tax, order_value)
+                   sales_unit_price_no_tax, sales_unit_price, revenue_no_tax, order_value,
+                   source_gross_profit, line_regional_platform, line_customer_unit_name, line_end_user_name,
+                   source_preserved, line_order_date, line_order_date_initialized, line_department, line_branch_company,
+                   source_order_value_precise, source_purchase_amount_precise, profit_tax_amount, profit_tax_refund, profit_inputs_initialized,
+                   line_account_manager, line_team_level3_name)
                 VALUES
                   (:sales_order_id, :sub_project_id, :raw_row_id, :excel_row_no, :project_name,
                    :goods_name, :specification_model, :unit_name, :quantity, :sales_tax_rate,
-                   :sales_unit_price_no_tax, :sales_unit_price, :revenue_no_tax, :order_value)
+                   :sales_unit_price_no_tax, :sales_unit_price, :revenue_no_tax, :order_value,
+                   :source_gross_profit, :line_regional_platform, :line_customer_unit_name, :line_end_user_name,
+                   :source_preserved, :line_order_date, :line_order_date_initialized, :line_department, :line_branch_company,
+                   :source_order_value_precise, :source_purchase_amount_precise, :profit_tax_amount, :profit_tax_refund, :profit_inputs_initialized,
+                   :line_account_manager, :line_team_level3_name)
                 """,
                 {
                     "sales_order_id": sales_order_id,
@@ -622,17 +647,35 @@ def import_excel(
                     "sales_unit_price": sales_unit_price,
                     "revenue_no_tax": revenue_no_tax,
                     "order_value": order_value,
+                    **profit_inputs,
+                    "source_gross_profit": (
+                        _as_decimal(_row_value(row, 66)) if preserve_source else None
+                    ),
+                    "line_customer_unit_name": _as_text(_row_value(row, 10)) if preserve_source else None,
+                    "line_end_user_name": _as_text(_row_value(row, 11)) if preserve_source else None,
+                    "line_regional_platform": _as_text(_row_value(row, 12)) if preserve_source else None,
+                    "source_preserved": int(preserve_source),
+                    "line_order_date": _as_date(_row_value(row, position(6, 6))) if preserve_source else None,
+                    "line_order_date_initialized": int(preserve_source),
+                    "line_department": department if preserve_source else None,
+                    "line_branch_company": _as_text(row[3]) if preserve_source else None,
+                    "line_account_manager": _as_text(row[4]) if preserve_source else None,
+                    "line_team_level3_name": _as_text(row[8]) if preserve_source else None,
                 },
             )
 
             purchase_tax_rate = _as_tax_rate(_row_value(row, position(25)), row_cells[position(25) - 1].number_format) if latest_layout else None
             purchase_unit_price_no_tax = _as_decimal(_row_value(row, position(26, 24)))
             purchase_unit_price = _as_decimal(_row_value(row, position(27, 25)))
-            purchase_unit_price, cost_no_tax, purchase_amount = _calculated_prices(
-                quantity, purchase_tax_rate, purchase_unit_price_no_tax, purchase_unit_price
-            )
-            cost_no_tax = cost_no_tax if cost_no_tax is not None else _as_decimal(_row_value(row, position(28, 26)))
-            purchase_amount = purchase_amount if purchase_amount is not None else _as_decimal(_row_value(row, position(29, 27)))
+            if preserve_source:
+                cost_no_tax = _as_decimal(_row_value(row, position(28, 26)))
+                purchase_amount = _as_decimal(_row_value(row, position(29, 27)))
+            else:
+                purchase_unit_price, cost_no_tax, purchase_amount = _calculated_prices(
+                    quantity, purchase_tax_rate, purchase_unit_price_no_tax, purchase_unit_price
+                )
+                cost_no_tax = cost_no_tax if cost_no_tax is not None else _as_decimal(_row_value(row, position(28, 26)))
+                purchase_amount = purchase_amount if purchase_amount is not None else _as_decimal(_row_value(row, position(29, 27)))
 
             conn.execute(
                 text(
@@ -825,10 +868,7 @@ def import_excel(
             if line_id_map is not None:
                 # 预检提交需要把 Excel 行号映射到明细 id，才能补写第 3 期及以后的财务。
                 line_id_map[excel_row_no] = order_line_id
-            if preserve_source:
-                conn.execute(text('UPDATE order_line SET source_preserved=1, line_department=:department, line_branch_company=:branch, line_account_manager=:manager, line_team_level3_name=:team WHERE id=:id'),
-                             {'id':order_line_id,'department':department,'branch':_as_text(row[3]),'manager':_as_text(row[4]),'team':_as_text(row[8])})
-            else:
+            if not preserve_source:
                 refresh_line(conn, order_line_id)
             success_rows += 1
         except PermissionError:

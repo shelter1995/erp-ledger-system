@@ -3,6 +3,7 @@ import type { MoneyValue } from './lib/money';
 export interface RecordHistory {
   editContext?: EditContext;
   orderNumberHistory?: string[];
+  orderNumberPath?: string[];
   managerHistory?: string[];
 }
 export interface FinancialPhase { date: string | null; amount: MoneyValue | null }
@@ -11,6 +12,7 @@ export interface FinancialPhase { date: string | null; amount: MoneyValue | null
  */
 
 export interface ProjectLedger extends RecordHistory {
+  grossProfit?: MoneyValue;
   deliveryAccountsReceivable?: MoneyValue;
   invoiceAccountsReceivable?: MoneyValue;
   deliveryValue?: MoneyValue; // B交付收入
@@ -49,6 +51,8 @@ export interface OrderRecord extends RecordHistory {
   accountsReceivable?: MoneyValue; // 应收账款
   accountsPayable?: MoneyValue; // 应付账款
   grossProfit?: MoneyValue; // 毛利润
+  taxAmount?: MoneyValue; // 税金（BL）
+  taxRefund?: MoneyValue; // 退税（BM）
   statisticalCategory?: string; // 统计类别
   teamName?: string; // 三级团队名称
   goodsName: string; // 物资/服务名称
@@ -141,4 +145,4 @@ export interface BackupInfo {
   backupTime: string; // 备份时间 (YYYY-MM-DD HH:mm:ss)
 }
 
-export type ScreenType = 'dashboard' | 'ledger' | 'orders' | 'purchases' | 'sales' | 'system';
+export type ScreenType = 'dashboard' | 'ledger' | 'orders' | 'purchases' | 'sales' | 'system' | 'maintenance' | 'accounts' | 'logs' | 'backups' | 'profile';

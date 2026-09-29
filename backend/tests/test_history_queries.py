@@ -79,8 +79,8 @@ def test_history_scope_and_exact_phase_dates(client, headers):
     change={'order_line_id':line,'expected':{k:ctx[k] for k in ['account_manager','department','branch_company','team_level3_name']},'account_manager':'乙','department':'乙部','reason':'跨部门'}
     assert client.post('/api/history/transfer-project',headers=limited,json=change).status_code==403
     hidden,_=_create_order(client,headers,'HIDDEN',department='乙部')
-    assert client.get(f'/api/history/lines/{hidden}',headers=limited).status_code==403
-    assert rename(client,limited,hidden,'SO-HIDDEN','X').status_code==403
+    assert client.get(f'/api/history/lines/{hidden}',headers=limited).status_code==404
+    assert rename(client,limited,hidden,'SO-HIDDEN','X').status_code==404
     assert client.get('/api/orders',headers=limited,params={'order_id':'HIDDEN'}).json()['total']==0
     for kind,path,field in [('sales','receipts','receipt'),('purchases','payments','payment')]:
         for date,amount in [('2026-01-01','10'),('2026-02-01','20')]:

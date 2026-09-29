@@ -26,18 +26,18 @@ class MaintenanceCommit(MaintenancePreview):
 
 
 @router.get('/api/import/files')
-def maintenance_files(user: CurrentUser = Depends(require_permission('system_admin'))):
+def maintenance_files(user: CurrentUser = Depends(require_permission('data_replace'))):
     return {'items':[p.name for p in DOCS_DIR.glob('*.xlsx') if p.is_file()]}
 
 
 @router.post('/api/import/preview')
-def preview_maintenance(payload: MaintenancePreview, user: CurrentUser = Depends(require_permission('system_admin'))):
+def preview_maintenance(payload: MaintenancePreview, user: CurrentUser = Depends(require_permission('data_replace'))):
     with db() as conn:
         return maintenance_import.preview(conn,user,payload.file_name)
 
 
 @router.post('/api/import/excel')
-def run_import(payload: MaintenanceCommit, user: CurrentUser = Depends(require_permission('system_admin'))):
+def run_import(payload: MaintenanceCommit, user: CurrentUser = Depends(require_permission('data_replace'))):
     with business_write() as conn:
         return maintenance_import.replace(conn,user,payload.file_name,payload.token,payload.confirmation)
 
@@ -46,29 +46,23 @@ def run_import(payload: MaintenanceCommit, user: CurrentUser = Depends(require_p
 def logs(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    _: CurrentUser = Depends(require_permission("system_admin")),
+    user: CurrentUser = Depends(require_permission("logs_view")),
 ) -> dict:
+    from ..audit_scope import log_filter
+    where, params = log_filter(user)
+    params.update(limit=limit, offset=offset)
     with db() as conn:
-        total = conn.execute(text("SELECT COUNT(*) FROM operation_log")).scalar()
-        rows = conn.execute(
-            text(
-                """
-                SELECT id, user_name, module_name, action_name, detail, status, created_at
-                FROM operation_log
-                ORDER BY created_at DESC
-                LIMIT :limit OFFSET :offset
-                """
-            ),
-            {"limit": limit, "offset": offset},
-        ).mappings().all()
-    return {"total": int(total or 0), "items": clean_rows(rows)}
+        total = conn.execute(text(f'SELECT COUNT(*) FROM operation_log WHERE {where}'), params).scalar()
+        rows = conn.execute(text(f'SELECT id,user_name,module_name,action_name,detail,status,created_at FROM operation_log WHERE {where} ORDER BY id DESC LIMIT :limit OFFSET :offset'), params).mappings().all()
+    return {'total': int(total or 0), 'items': clean_rows(rows)}
+
 
 
 @router.get("/api/backups")
 def backups(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    _: CurrentUser = Depends(require_permission("system_admin")),
+    _: CurrentUser = Depends(require_permission("backups_view")),
 ) -> dict:
     with db() as conn:
         total = conn.execute(text("SELECT COUNT(*) FROM backup_record")).scalar()
@@ -87,13 +81,13 @@ def backups(
 
 
 @router.post("/api/backups")
-def create_system_backup(user: CurrentUser = Depends(require_permission("system_admin"))) -> dict:
+def create_system_backup(user: CurrentUser = Depends(require_permission("backups_create"))) -> dict:
     with business_write() as conn:
         return create_backup(conn, user)
 
 
 @router.get('/api/backups/{backup_id}/verify')
-def verify_system_backup(backup_id: int, user: CurrentUser = Depends(require_permission('system_admin'))):
+def verify_system_backup(backup_id: int, user: CurrentUser = Depends(require_permission('backups_verify'))):
     with db() as conn:
         return verify_backup(conn,backup_id)
 
@@ -101,7 +95,7 @@ def verify_system_backup(backup_id: int, user: CurrentUser = Depends(require_per
 @router.post("/api/backups/{backup_id}/restore")
 def restore_system_backup(
     backup_id: int,
-    user: CurrentUser = Depends(require_permission("system_admin")),
+    user: CurrentUser = Depends(require_permission("backups_restore")),
 ) -> dict:
     with business_write() as conn:
         create_backup(conn, user, "pre_restore")

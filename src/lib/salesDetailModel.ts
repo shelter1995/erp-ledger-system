@@ -1,5 +1,6 @@
 import { isClosedStatus } from './ledgerStats';
 import { compareMoney, decimalMoney, differenceMoney, moneyString, sumMoney, type MoneyValue } from './money';
+import { grossProfitValue } from './profit';
 type ReceiptLike = { phase_no?: number | null };
 
 type SalesDraftSource = {
@@ -20,6 +21,10 @@ type LedgerLike = {
 };
 
 type DetailOrderLike = {
+  grossProfit?: MoneyValue;
+  purchaseAmount?: MoneyValue;
+  taxAmount?: MoneyValue;
+  taxRefund?: MoneyValue;
   projectId: string;
   orderId: string;
   goodsName: string;
@@ -62,6 +67,8 @@ const aggregateAmountKeys = [
   'delivery_accounts_receivable',
   'invoice_accounts_receivable',
   'gross_profit',
+  'tax_difference',
+  'tax_refund',
 ];
 
 export function getNextReceiptPhase(receipts: ReceiptLike[]) {
@@ -197,7 +204,7 @@ export function buildLedgerPaymentRows(
     const receiptAmount = moneyString(sale?.totalReceived);
     const accountsReceivable = moneyString(sale?.accountsReceivable ??
       (compareMoney(order.orderValue, receiptAmount) > 0 ? differenceMoney(order.orderValue, receiptAmount) : '0.00'));
-    const grossProfit = differenceMoney(order.orderValue, purchasePayableBase);
+    const grossProfit = moneyString(grossProfitValue({ ...order, purchaseAmount: order.purchaseAmount ?? purchasePayableBase }));
     const grossProfitRate = compareMoney(order.orderValue, 0) !== 0 ? decimalMoney(grossProfit).div(order.orderValue).times(100).toNumber() : 0;
 
     return {

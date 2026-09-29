@@ -32,6 +32,23 @@ def touch_line(conn, line_id):
     if pid is not None: touch_project(conn,pid)
 
 
+def touch_lines(conn, line_ids):
+    """Mark projects for many lines without one ownership query per line."""
+    ids = sorted({int(line_id) for line_id in line_ids})
+    for start in range(0, len(ids), 1000):
+        chunk = ids[start:start + 1000]
+        projects = conn.execute(
+            text(
+                'SELECT DISTINCT so.project_id FROM order_line ol '
+                'JOIN sales_order so ON so.id=ol.sales_order_id '
+                'WHERE ol.id IN :ids'
+            ).bindparams(bindparam('ids', expanding=True)),
+            {'ids': chunk},
+        ).scalars().all()
+        for project_id in projects:
+            touch_project(conn, project_id)
+
+
 def bump_epoch(conn):
     conn.execute(text('UPDATE business_state SET data_epoch=data_epoch+1 WHERE id=1'))
 
@@ -82,7 +99,7 @@ def start_write(conn):
       WHERE p.deleted_at IS NULL AND ol.id IN :ids''').bindparams(bindparam('ids',expanding=True)),{'ids':ids}).mappings().all()
     user=getattr(request.state,'current_user',None)
     if user is None or any(not can_access_department(user,r['department'],True) for r in projects):
-        raise HTTPException(403,'没有目标项目的维护权限')
+        raise HTTPException(404,'目标记录不存在或不可维护')
     try:
         supplied=json.loads(request.headers.get('X-Edit-Context',''))
         if not isinstance(supplied,dict) or not isinstance(supplied.get('projects'),dict) or not isinstance(supplied.get('data_epoch'),int): raise ValueError()

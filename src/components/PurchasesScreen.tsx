@@ -1,3 +1,4 @@
+import { PageSizeSelect } from './ManagementUI';
 import { editingApi } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -129,7 +130,7 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
     payment_amount: '',
   });
 
-  const itemsPerPage = 5;
+  const [itemsPerPage, setItemsPerPage] = useState(5);
 
   const filteredPurchases = useMemo(() => {
     return applyPurchaseFilters(purchases, submittedFilters);
@@ -144,7 +145,7 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
   const paginatedPurchases = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredPurchases.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredPurchases, currentPage]);
+  }, [filteredPurchases, currentPage, itemsPerPage]);
 
   const totalPages = Math.max(1, Math.ceil(filteredPurchases.length / itemsPerPage));
   const paginationItems = getPaginationItems(totalPages);
@@ -709,7 +710,7 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
               <ChevronRight className="w-4 h-4" />
             </button>
             <div className="ml-3 flex items-center gap-1 text-xs text-slate-500">
-              <span>跳转至</span>
+              <PageSizeSelect value={itemsPerPage} onChange={size=>{setItemsPerPage(size);setCurrentPage(1);}}/><span>跳转至</span>
               <input
                 type="number"
                 min={1}

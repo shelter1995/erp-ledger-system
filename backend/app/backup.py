@@ -154,6 +154,9 @@ def verify_backup(conn: Connection, backup_id: int):
 def restore_backup(conn: Connection, backup_id: int, user: CurrentUser, *, allow_source_mapping=False) -> dict[str, Any]:
     record,payload=backup_payload(conn,backup_id,allow_source_mapping=allow_source_mapping)
     tables=payload['tables']
+    if user.authorization_version == 1:
+        from .department_service import validate_restore_departments
+        validate_restore_departments(conn, tables)
     # Validate every table and column before deleting anything.
     for table_name,rows in tables.items():
         allowed=set(_insertable_columns(conn,table_name))
@@ -177,6 +180,11 @@ def restore_backup(conn: Connection, backup_id: int, user: CurrentUser, *, allow
             value_sql = ", ".join(f":{column}" for column in columns)
             conn.execute(text(f"INSERT INTO `{table_name}` ({column_sql}) VALUES ({value_sql})"), row)
             restored_rows += 1
+
+    from .source_order_dates import backfill_source_order_dates
+    backfill_source_order_dates(conn)
+    from .profit_calculations import backfill_profit_inputs
+    backfill_profit_inputs(conn)
 
     if payload.get('legacy_history_missing'):
         # Old v1 backups have no normalized subprojects/history: preserve known

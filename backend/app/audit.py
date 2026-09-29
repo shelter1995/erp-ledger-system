@@ -43,7 +43,7 @@ def _order_context(conn: Connection, before: Mapping[str, Any] | None, after: Ma
     source = after or before or {}
     context = {
         key: source.get(key)
-        for key in ("project_code", "order_no", "goods_name", "specification_model")
+        for key in ("project_code", "order_no", "goods_name", "specification_model", "department")
         if source.get(key) not in (None, "")
     }
     order_line_id = source.get("order_line_id")
@@ -52,7 +52,7 @@ def _order_context(conn: Connection, before: Mapping[str, Any] | None, after: Ma
     row = conn.execute(
         text(
             """
-            SELECT p.project_code, so.order_no, ol.goods_name, ol.specification_model
+            SELECT p.project_code, so.order_no, ol.goods_name, ol.specification_model, CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
             FROM order_line ol
             JOIN sales_order so ON so.id = ol.sales_order_id
             JOIN project p ON p.id = so.project_id
@@ -190,16 +190,19 @@ def _insert_operation_log(
     audit_detail: Mapping[str, Any],
     status: str,
 ) -> None:
+    from .audit_scope import event_scope
+    scope = event_scope(conn, user, module_name, audit_detail)
     conn.execute(
         text(
             """
             INSERT INTO operation_log
-              (user_id, user_name, module_name, action_name, detail, status)
+              (user_id, user_name, module_name, action_name, detail, status, actor_department_id, department_ids_json, event_kind, scope_known)
             VALUES
-              (:user_id, :user_name, :module_name, :action_name, :detail, :status)
+              (:user_id, :user_name, :module_name, :action_name, :detail, :status, :actor_department_id, :department_ids_json, :event_kind, :scope_known)
             """
         ),
         {
+            **scope,
             "user_id": user.id,
             "user_name": _actor_name(user),
             "module_name": module_name,

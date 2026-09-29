@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from ..department_service import department_filter
 from sqlalchemy import text
 
 from ..auth import CurrentUser, apply_department_scope, get_current_user
@@ -32,7 +33,7 @@ def list_ledgers(
         conditions.append("project_code LIKE :project_id")
         params["project_id"] = f"%{project_id}%"
     if department:
-        conditions.append("department = :department")
+        conditions.append(department_filter("department"))
         params["department"] = department
     if manager:
         conditions.append(manager_match() if include_history_manager else "account_manager LIKE :manager")
@@ -56,8 +57,8 @@ def list_ledgers(
     scope = ['1=1']
     apply_department_scope(scope, params, user, 'finance.department')
     if department:
-        scope.append('finance.department = :department')
-        conditions.remove('department = :department')
+        scope.append(department_filter('finance.department'))
+        conditions.remove(department_filter('department'))
 
     where_sql = " AND ".join(conditions)
     totals = {key:key for key in ('purchase_amount','labor_cost','other_cost','total_finance_paid',
@@ -101,5 +102,5 @@ def list_ledgers(
             ),
             params,
         ).mappings().all()
-        items = enrich_history(conn, rows)
+        items = clean_rows(rows)
     return {"total": int(total or 0), "items": items}

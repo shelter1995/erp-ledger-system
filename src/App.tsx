@@ -1,6 +1,6 @@
 import EditConflictDialog from './components/EditConflictDialog';
-import { editingApi } from './api';
-import React, { useEffect, useState } from 'react';
+import { accountApi, editingApi } from './api';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   LayoutDashboard,
   BookOpen,
@@ -33,7 +33,7 @@ import {
   BackendUserRecord,
   UNAUTHORIZED_EVENT,
 } from './api';
-import { AuthUser, hasPermission, normalizeUser } from './lib/permissions';
+import { AuthUser, hasPermission, normalizeUser, canOpenPage, firstAllowedPage } from './lib/permissions';
 import {
   formatOperationLogChangeGroups,
   formatOperationLogDetails,
@@ -43,11 +43,14 @@ import { loadAllPages } from './lib/loadAllPages';
 import { rawAmount, optionalAmount } from './lib/money';
 
 import DashboardScreen from './components/DashboardScreen';
-import LedgerScreen from './components/LedgerScreen';
+import SummaryLedgerScreen from './components/SummaryLedgerScreen';
+import AccountPermissionsScreen from './components/AccountPermissionsScreen';
+import ProfileScreen from './components/ProfileScreen';
+import { MaintenanceScreen, LogsScreen, BackupsScreen } from './components/ManagementScreens';
 import OrdersScreen from './components/OrdersScreen';
 import PurchasesScreen from './components/PurchasesScreen';
 import SalesScreen from './components/SalesScreen';
-import SystemScreen, { CreateUserPayload } from './components/SystemScreen';
+import type { CreateUserPayload } from './components/SystemScreen';
 
 const fallbackText = '-';
 const ztfsIconLogo = new URL('./logo/中通服图标LOGO.png', import.meta.url).href;
@@ -64,6 +67,7 @@ function mapLedger(item: BackendProjectLedger): ProjectLedger {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     deliveryValue: rawAmount(item.delivery_value),
     deliveryCost: rawAmount(item.delivery_cost),
@@ -76,6 +80,7 @@ function mapLedger(item: BackendProjectLedger): ProjectLedger {
     clientUnit: item.customer_unit_name || fallbackText,
     projectName: item.project_name || fallbackText,
     orderAmount: rawAmount(item.order_amount),
+    grossProfit: optionalAmount(item.gross_profit),
     purchaseAmount: rawAmount(item.purchase_amount),
     totalReceived: rawAmount(item.total_received),
     department: item.department || fallbackText,
@@ -90,6 +95,7 @@ function mapOrder(item: BackendOrderRecord): OrderRecord {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     orderLineId: item.order_line_id,
     amountType: item.amount_type || '',
@@ -109,6 +115,8 @@ function mapOrder(item: BackendOrderRecord): OrderRecord {
     accountsReceivable: optionalAmount(item.accounts_receivable),
     accountsPayable: optionalAmount(item.accounts_payable),
     grossProfit: optionalAmount(item.gross_profit),
+    taxAmount: optionalAmount(item.tax_difference),
+    taxRefund: optionalAmount(item.tax_refund),
     statisticalCategory: item.statistical_category || '',
     teamName: item.team_name || '',
     goodsName: item.goods_name || fallbackText,
@@ -150,6 +158,7 @@ function mapPurchase(item: BackendPurchaseRecord): PurchaseRecord {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     orderLineId: item.order_line_id,
     projectId: item.project_code,
@@ -170,6 +179,7 @@ function mapSale(item: BackendSalesRecord): SalesRecord {
   return {
     editContext: item.edit_context,
     orderNumberHistory: item.order_number_history,
+    orderNumberPath: item.order_number_path,
     managerHistory: item.manager_history,
     orderLineId: item.order_line_id,
     projectId: item.project_code,
@@ -217,6 +227,7 @@ function mapAuthUser(item: BackendAuthUser): AuthUser {
 }
 
 export default function App() {
+  const loadVersion = useRef(0);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia('(max-width: 767px)').matches);
   const [ledgers, setLedgers] = useState<ProjectLedger[]>([]);
@@ -234,6 +245,7 @@ export default function App() {
   const [error, setError] = useState('');
 
   const clearSession = () => {
+    loadVersion.current += 1;
     window.localStorage.removeItem('erp_auth_token');
     api.setToken('');
     setCurrentUser(null);
@@ -250,42 +262,52 @@ export default function App() {
   };
 
   async function loadBackendData(user = currentUser) {
+    if (!user || user.mustChangePassword) return;
+    const ticket = ++loadVersion.current;
     setError('');
     try {
-      const [, ledgerData, orderData, purchaseData, salesData] = await Promise.all([
-        api.health(),
-        loadAllPages(api.ledgers),
-        loadAllPages(api.orders),
-        loadAllPages(api.purchases),
-        loadAllPages(api.sales),
-      ]);
-
-      setLedgers(ledgerData.items.map(mapLedger));
-      setOrders(orderData.items.map(mapOrder));
-      setPurchases(purchaseData.items.map(mapPurchase));
-      setSales(salesData.items.map(mapSale));
-      setLastUpdated(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
-      if (user && hasPermission(user, 'system_admin')) {
-        const [userData, inactiveUserData, logData, backupData] = await Promise.all([
-          api.users(),
-          api.users('inactive'),
-          api.logs(),
-          api.backups(),
-        ]);
-        setUsers(userData.items);
-        setInactiveUsers(inactiveUserData.items);
-        setLogs(logData.items.map(mapLog));
-        setBackups(backupData.items.map(mapBackup));
-      } else {
-        setUsers([]);
-        setInactiveUsers([]);
-        setLogs([]);
-        setBackups([]);
+      if (currentScreen === 'dashboard' && hasPermission(user,'logs_view')) {
+        const data=await accountApi.logs(0,5);
+        if(ticket!==loadVersion.current)return;
+        setLogs(data.items.map(mapLog));
+      } else if (currentScreen === 'orders' && canOpenPage(user,'orders')) {
+        const data=await loadAllPages(api.orders);
+        if(ticket!==loadVersion.current)return;
+        setOrders(data.items.map(mapOrder));
+      } else if (currentScreen === 'purchases' && canOpenPage(user,'purchases')) {
+        const [data, options] = await Promise.all([loadAllPages(api.purchases), accountApi.orderOptions('purchases')]);
+        if(ticket!==loadVersion.current)return;
+        setPurchases(data.items.map(mapPurchase)); setOrders(options.items.map(mapOrder));
+      } else if (currentScreen === 'sales' && canOpenPage(user,'sales')) {
+        const [data, options] = await Promise.all([loadAllPages(api.sales), accountApi.orderOptions('sales')]);
+        if(ticket!==loadVersion.current)return;
+        setSales(data.items.map(mapSale)); setOrders(options.items.map(mapOrder));
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '后端数据加载失败');
-    }
+      setLastUpdated(new Date().toLocaleTimeString('zh-CN', {hour12:false}));
+    } catch (err) { if(ticket===loadVersion.current)setError(err instanceof Error ? err.message : '数据加载失败'); }
   }
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (!canOpenPage(currentUser,currentScreen)) {
+      setCurrentScreen(firstAllowedPage(currentUser) as ScreenType);
+      return;
+    }
+    setOrders([]);setPurchases([]);setSales([]);
+    void loadBackendData(currentUser);
+    return ()=>{loadVersion.current+=1;};
+  }, [currentScreen, currentUser]);
+
+  useEffect(() => {
+    const navigate = () => {
+      if (!currentUser) return;
+      const page = window.location.hash.slice(1);
+      const target = page === 'system' ? ['maintenance','accounts','logs','backups'].find(p=>canOpenPage(currentUser,p)) : page;
+      if (target && canOpenPage(currentUser,target)) setCurrentScreen(target as ScreenType);
+    };
+    navigate(); window.addEventListener('hashchange',navigate);
+    return () => window.removeEventListener('hashchange',navigate);
+  }, [currentUser]);
 
   useEffect(() => {
     const token = window.localStorage.getItem('erp_auth_token');
@@ -298,7 +320,7 @@ export default function App() {
       .then(({ user }) => {
         const mappedUser = mapAuthUser(user);
         setCurrentUser(mappedUser);
-        void loadBackendData(mappedUser);
+        setCurrentScreen(firstAllowedPage(mappedUser) as ScreenType);
       })
       .catch(() => {
         window.localStorage.removeItem('erp_auth_token');
@@ -336,13 +358,14 @@ export default function App() {
       const mappedUser = mapAuthUser(result.user);
       setCurrentUser(mappedUser);
       setAuthLoading(false);
-      await loadBackendData(mappedUser);
+      setCurrentScreen(firstAllowedPage(mappedUser) as ScreenType);
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : '登录失败');
     }
   };
 
   const handleLogout = () => {
+    void accountApi.logout().catch(() => {});
     clearSession();
     setLoginError('');
   };
@@ -457,6 +480,8 @@ export default function App() {
   };
 
   const navigateFromSidebar = (screen: ScreenType) => {
+    if (!canOpenPage(currentUser,screen)) return;
+    window.location.hash=screen;
     setCurrentScreen(screen);
     if (window.matchMedia('(max-width: 767px)').matches) setSidebarCollapsed(true);
   };
@@ -467,7 +492,7 @@ export default function App() {
     orders: '基本信息',
     purchases: '采购信息',
     sales: '销售信息',
-    system: '系统管理',
+    system: '系统管理', maintenance:'数据维护与台账批量导入', accounts:'账号与权限', logs:'操作日志', backups:'数据备份与恢复', profile:'个人账号',
   };
 
   if (authLoading) {
@@ -510,7 +535,7 @@ export default function App() {
 
         <nav className="flex-1 py-4 text-[13px] space-y-0.5 overflow-y-auto">
           {!sidebarCollapsed && (
-            <div className="px-6 py-2 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">核心业务</div>
+            <div className="mx-4 mb-2 border-b border-slate-700/70 px-2 pb-2 pt-3 text-xs font-bold text-slate-300 tracking-widest">核心业务</div>
           )}
           {[
             ['dashboard', '首页仪表盘', <LayoutDashboard className="w-4 h-4 shrink-0 mr-1" />],
@@ -518,7 +543,7 @@ export default function App() {
             ['orders', '基本信息', <FileText className="w-4 h-4 shrink-0 mr-1" />],
             ['sales', '销售信息', <DollarSign className="w-4 h-4 shrink-0 mr-1" />],
             ['purchases', '采购信息', <ShoppingBag className="w-4 h-4 shrink-0 mr-1" />],
-          ].map(([key, label, icon]) => (
+          ].filter(([key])=>canOpenPage(currentUser,key as string)).map(([key, label, icon]) => (
             <a
               key={key as string}
               href={`#${key}`}
@@ -534,27 +559,15 @@ export default function App() {
           ))}
 
           {!sidebarCollapsed && (
-            <div className="mt-4 px-6 py-2 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">设置</div>
+            <div className="mt-4 mx-4 mb-2 border-b border-slate-700/70 px-2 pb-2 pt-3 text-xs font-bold text-slate-300 tracking-widest">设置</div>
           )}
-          {canManageSystem && (
-            <a
-              id="nav-system"
-              href="#system"
-              onClick={(event) => {
-                event.preventDefault();
-                navigateFromSidebar('system');
-              }}
-              className={getSidebarLinkClass('system')}
-            >
-              <Settings className="w-4 h-4 shrink-0 mr-1" />
-              {!sidebarCollapsed && <span className="sidebar-text whitespace-nowrap">系统管理</span>}
-            </a>
-          )}
+          {(['maintenance','accounts','logs','backups'] as ScreenType[]).filter(page=>canOpenPage(currentUser,page)).map(page=><a key={page} href={'#'+page} onClick={e=>{e.preventDefault();navigateFromSidebar(page);}} className={getSidebarLinkClass(page)}><Settings className="w-4 h-4 shrink-0"/>{!sidebarCollapsed&&<span>{screenNameMap[page]}</span>}</a>)}
+
         </nav>
 
-        <div className="p-4 border-t border-slate-800 flex items-center space-x-3 shrink-0 overflow-hidden">
+        <button type="button" title="个人账号" aria-label="打开个人账号" onClick={()=>navigateFromSidebar('profile')} className="p-4 border-t border-slate-800 flex items-center space-x-3 shrink-0 overflow-hidden text-left hover:bg-slate-800 transition-colors">
           <div className="w-8 h-8 rounded-full bg-slate-700 shrink-0 flex items-center justify-center font-bold text-slate-300 text-xs">
-            {currentUser.displayName.charAt(0) || currentUser.username.charAt(0)}
+            {currentUser.avatarData?<img src={currentUser.avatarData} alt="个人头像" className="w-8 h-8 rounded-full object-cover"/>:currentUser.displayName.charAt(0) || currentUser.username.charAt(0)}
           </div>
           {!sidebarCollapsed && (
             <div className="overflow-hidden">
@@ -562,7 +575,7 @@ export default function App() {
               <p className="text-[10px] text-slate-500 truncate">{currentUser.roleLabel}</p>
             </div>
           )}
-        </div>
+        </button>
       </aside>
 
       <div
@@ -622,21 +635,11 @@ export default function App() {
               {error}
             </div>
           )}
-          {currentScreen === 'dashboard' && (
-            <DashboardScreen logs={logs} ledgers={ledgers} orders={orders} onNavigate={setCurrentScreen} />
+          {currentScreen === 'dashboard' && canOpenPage(currentUser,'dashboard') && (
+            <DashboardScreen logs={logs} ledgers={[]} orders={[]} onNavigate={navigateFromSidebar} serverMode showLogs={hasPermission(currentUser,'logs_view')} />
           )}
-          {currentScreen === 'ledger' && (
-            <LedgerScreen
-              ledgers={ledgers}
-              orders={orders}
-              purchases={purchases}
-              sales={sales}
-              onAddLedger={handleAddLedger}
-              onDownloadTemplate={api.downloadOrderTemplate}
-              onExportExcel={api.exportOrdersExcel}
-            />
-          )}
-          {currentScreen === 'orders' && (
+          {currentScreen === 'ledger' && canOpenPage(currentUser,'ledger') && <SummaryLedgerScreen user={currentUser} onNavigate={navigateFromSidebar}/>}
+          {currentScreen === 'orders' && canOpenPage(currentUser,'orders') && (
             <OrdersScreen
               orders={orders}
               onAddOrder={handleAddOrder}
@@ -650,28 +653,14 @@ export default function App() {
               canImportLedger={canImportLedger}
             />
           )}
-          {currentScreen === 'purchases' && <PurchasesScreen purchases={purchases} orders={orders} canEnterPurchases={canEnterPurchases} canEditPurchases={canEditPurchases} canDeletePurchases={canDeletePurchases} onRefresh={loadBackendData} />}
-          {currentScreen === 'sales' && <SalesScreen sales={sales} orders={orders} canEnterSales={canEnterSales} canEditSales={canEditSales} canDeleteSales={canDeleteSales} onRefresh={loadBackendData} />}
-          {currentScreen === 'system' && (
-            <SystemScreen
-              logs={logs}
-              backups={backups}
-              users={users}
-              inactiveUsers={inactiveUsers}
-              canManageUsers={canManageSystem}
-              departments={ledgers.map((item) => item.department).filter((department) => department && department !== fallbackText)}
-              currentUserId={currentUser.id}
-              onCreateBackup={handleCreateBackup}
-              onRestoreBackup={handleRestoreBackup}
-              onRefresh={handleRefreshAll}
-              onCreateUser={handleCreateUser}
-              onUpdateUserPermissions={handleUpdateUserPermissions}
-              onDeactivateUser={handleDeactivateUser}
-              onRestoreUser={handleRestoreUser}
-              onResetUserPassword={handleResetUserPassword}
-              onPermanentlyDeleteUser={handlePermanentlyDeleteUser}
-            />
-          )}
+          {currentScreen === 'purchases' && canOpenPage(currentUser,'purchases') && <PurchasesScreen purchases={purchases} orders={orders} canEnterPurchases={canEnterPurchases} canEditPurchases={canEditPurchases} canDeletePurchases={canDeletePurchases} onRefresh={loadBackendData} />}
+          {currentScreen === 'sales' && canOpenPage(currentUser,'sales') && <SalesScreen sales={sales} orders={orders} canEnterSales={canEnterSales} canEditSales={canEditSales} canDeleteSales={canDeleteSales} onRefresh={loadBackendData} />}
+          {currentScreen === 'maintenance' && canOpenPage(currentUser,'maintenance') && <MaintenanceScreen user={currentUser}/>}
+          {currentScreen === 'accounts' && canOpenPage(currentUser,'accounts') && <AccountPermissionsScreen user={currentUser}/>}
+          {currentScreen === 'logs' && canOpenPage(currentUser,'logs') && <LogsScreen/>}
+          {currentScreen === 'backups' && canOpenPage(currentUser,'backups') && <BackupsScreen user={currentUser}/>}
+          {currentScreen === 'profile' && canOpenPage(currentUser,'profile') && <ProfileScreen user={currentUser} onProfileChanged={setCurrentUser} onChanged={()=>{clearSession();setLoginError('密码已修改，请使用新密码登录');}}/>}
+
         </main>
       </div>
     </div>

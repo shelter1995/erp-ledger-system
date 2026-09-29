@@ -1,3 +1,4 @@
+import { PageSizeSelect } from './ManagementUI';
 import HistoryChange from './HistoryChange';
 import React, { useState, useMemo, useRef } from 'react';
 import { api, ApiError } from '../api';
@@ -10,7 +11,7 @@ import {
   ChevronLeft, 
   ChevronRight, 
   ShoppingBag,
-  FileUp,
+  Upload,
   FileSpreadsheet,
   ListChecks,
   Eye,
@@ -128,7 +129,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
+  const [itemsPerPage, setItemsPerPage] = useState(5);
 
   // New Order Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -229,7 +230,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
   const paginatedOrders = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredOrders.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredOrders, currentPage]);
+  }, [filteredOrders, currentPage, itemsPerPage]);
 
   const totalPages = Math.max(1, Math.ceil(filteredOrders.length / itemsPerPage));
   const paginationItems = getPaginationItems(totalPages);
@@ -872,13 +873,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
         onHistory={() => { setShowSourceImport(false); setShowLegacyPreview(true); }}
         onDirectImport={event => { setShowSourceImport(false); void handleBatchImport(event); }} />}
       {/* Page Header */}
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="shrink-0">
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">基本信息列表</h1>
           <p className="text-sm text-slate-500 font-sans mt-1">查看和管理客户订单的基础业务信息</p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2 self-start sm:self-center">
-          {canImportLedger && <button type="button" disabled={importBusy} onClick={() => setShowSourceImport(true)} className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold"><FileUp className="w-4 h-4" />导入台账</button>}
+        <div aria-label="基本信息页面操作" className="flex flex-wrap items-center gap-2 self-start lg:max-w-[760px] lg:justify-end">
           {canEnterOrders && (
             <>
               <button
@@ -1178,7 +1178,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             </button>
 
             <div className="ml-3 flex items-center gap-1 text-xs text-slate-500">
-              <span>跳转至</span>
+              <PageSizeSelect value={itemsPerPage} onChange={size=>{setItemsPerPage(size);setCurrentPage(1);}}/><span>跳转至</span>
               <input
                 type="number"
                 min={1}
@@ -1352,7 +1352,8 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                     ['用户', selectedOrder.userName || ''],
                     ['区域平台', selectedOrder.regionalPlatform || ''],
                     ['销售订单号', selectedOrder.orderId],
-                    ['订单号历史', (selectedOrder.orderNumberHistory || [selectedOrder.orderId]).join(' → ')],
+                    ['关联订单号', (selectedOrder.orderNumberHistory || [selectedOrder.orderId]).join('、')],
+                    ['本明细改号路径', (selectedOrder.orderNumberPath || []).join(' → ')],
                     ['负责人历史', (selectedOrder.managerHistory || []).join(' → ')],
                     ['项目名称', selectedOrder.projectName || ''],
                     ['物资/服务名称', selectedOrder.goodsName],

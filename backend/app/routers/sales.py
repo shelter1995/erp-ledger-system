@@ -4,13 +4,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from ..department_service import department_filter
 from sqlalchemy import text
 
 from ..audit import write_batch_operation_log, write_operation_log
 from ..auth import CurrentUser, apply_department_scope, can_access_department, get_current_user, require_permission
 from ..edit_versions import line_context
 from ..db import db
-from ..history_queries import order_match, manager_match, enrich_history, enrich_phases
+from ..history_queries import order_match, manager_match, enrich_history, enrich_phases, delivery_records
 from ..financial_calculations import refresh_balances, sales_record_values
 from ..ledger_excel import (
     editor_changed_keys,
@@ -100,6 +101,8 @@ SUMMARY_AMOUNT_FIELDS = {
     "delivery_accounts_receivable",
     "invoice_accounts_receivable",
     "gross_profit",
+    "tax_difference",
+    "tax_refund",
 }
 
 
@@ -131,7 +134,7 @@ def list_sales(
         conditions.append(manager_match() if include_history_manager else "account_manager LIKE :manager")
         params["manager"] = f"%{manager}%"
     if department:
-        conditions.append("department = :department")
+        conditions.append(department_filter("department"))
         params["department"] = department
     if supplier_name:
         conditions.append("supplier_name LIKE :supplier_name")
@@ -300,7 +303,7 @@ def get_sales_detail_by_order(project_id: str, order_id: str, user: CurrentUser 
                        purchase_contract_no, purchase_contract_signed_amount,
                        sales_contract_no, sales_contract_signed_date, sales_contract_value,
                        sales_invoice_amount, total_received, accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable,
-                       gross_profit_no_tax, gross_profit_margin_no_tax, gross_profit
+                       gross_profit_no_tax, gross_profit_margin_no_tax, gross_profit, tax_difference, tax_refund
                 FROM v_order_line_finance
                 WHERE project_code = :project_id AND order_no = :order_id
                 ORDER BY order_line_id
@@ -314,7 +317,7 @@ def get_sales_detail_by_order(project_id: str, order_id: str, user: CurrentUser 
             not can_access_department(user, str(row["department"]) if row["department"] is not None else None)
             for row in summary_rows
         ):
-            raise HTTPException(status_code=403, detail="Department permission denied")
+            raise HTTPException(status_code=404, detail="记录不存在")
 
         line_filter_sql = """
             SELECT order_line_id
@@ -361,10 +364,12 @@ def get_sales_detail_by_order(project_id: str, order_id: str, user: CurrentUser 
         ).mappings().all()
 
         edit_context = line_context(conn,[r["order_line_id"] for r in summary_rows])
+        deliveries = delivery_records(conn, [r['order_line_id'] for r in summary_rows])
     invoices, receipts = sales_record_values(summary_rows, invoices, receipts)
     return {
         "edit_context":edit_context,
         "summary": clean_row(_aggregate_summary(summary_rows)),
+        "deliveries": deliveries,
         "contracts": clean_rows(contracts),
         "invoices": clean_rows(invoices),
         "receipts": clean_rows(receipts),
@@ -384,7 +389,7 @@ def get_sales_detail(order_line_id: int, user: CurrentUser = Depends(get_current
                        supplier_name, purchase_amount, delivery_quantity, delivery_value,
                        purchase_contract_no, purchase_contract_signed_amount,
                        sales_contract_no, sales_contract_signed_date, sales_contract_value,
-                       sales_invoice_amount, total_received, accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable, gross_profit
+                       sales_invoice_amount, total_received, accounts_receivable, delivery_accounts_receivable, invoice_accounts_receivable, gross_profit, tax_difference, tax_refund
                 FROM v_order_line_finance
                 WHERE order_line_id = :order_line_id
                 """
@@ -394,7 +399,7 @@ def get_sales_detail(order_line_id: int, user: CurrentUser = Depends(get_current
         if summary is None:
             raise HTTPException(status_code=404, detail="Sales order line not found")
         if not can_access_department(user, str(summary["department"]) if summary["department"] is not None else None):
-            raise HTTPException(status_code=403, detail="Department permission denied")
+            raise HTTPException(status_code=404, detail="记录不存在")
 
         contracts = conn.execute(
             text(
@@ -435,10 +440,12 @@ def get_sales_detail(order_line_id: int, user: CurrentUser = Depends(get_current
         ).mappings().all()
 
         edit_context = line_context(conn,[order_line_id])
+        deliveries = delivery_records(conn, [order_line_id])
     invoices, receipts = sales_record_values([summary], invoices, receipts)
     return {
         "edit_context":edit_context,
         "summary": clean_row(summary),
+        "deliveries": deliveries,
         "contracts": clean_rows(contracts),
         "invoices": clean_rows(invoices),
         "receipts": clean_rows(receipts),
@@ -696,7 +703,7 @@ def _ensure_order_line_in_conn(
         str(row["department"]) if row["department"] is not None else None,
         True,
     ):
-        raise HTTPException(status_code=403, detail=f"无权修改订单明细 {order_line_id}")
+        raise HTTPException(status_code=404, detail="记录不存在")
     return dict(row)
 
 
@@ -933,7 +940,7 @@ def _ensure_order_line(order_line_id: int, user: CurrentUser, require_entry: boo
     if row is None:
         raise HTTPException(status_code=404, detail="Order line not found")
     if not can_access_department(user, str(row["department"]) if row["department"] is not None else None, require_entry):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
 
 
 def _payload_dict(payload: BaseModel) -> dict:
@@ -960,7 +967,7 @@ def _ensure_detail_record(table_name: str, record_id: int, user: CurrentUser, re
     if row is None:
         raise HTTPException(status_code=404, detail="Sales record not found")
     if not can_access_department(user, str(row["department"]) if row["department"] is not None else None, require_entry):
-        raise HTTPException(status_code=403, detail="Department permission denied")
+        raise HTTPException(status_code=404, detail="记录不存在")
     return int(row["order_line_id"])
 
 

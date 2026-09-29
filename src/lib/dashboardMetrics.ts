@@ -1,5 +1,6 @@
 import { OrderRecord, ProjectLedger } from '../types';
-import { compareMoney, differenceMoney, sumMoney } from './money';
+import { compareMoney, decimalMoney, differenceMoney, sumMoney } from './money';
+import { grossProfitValue } from './profit';
 
 export interface DashboardMetricsInput {
   ledgers: ProjectLedger[];
@@ -93,16 +94,16 @@ export function getDashboardTrendData(items: Array<ProjectLedger | OrderRecord>,
     const current = totals.get(month) || { orderAmount: '0.00', profit: '0.00' };
     const orderAmount = 'orderAmount' in item ? item.orderAmount : item.orderValue;
     const profit = 'orderAmount' in item
-      ? differenceMoney(item.orderAmount, item.purchaseAmount)
-      : item.grossProfit ?? differenceMoney(item.orderValue, item.purchaseAmount);
+      ? item.grossProfit ?? differenceMoney(item.orderAmount, item.purchaseAmount)
+      : grossProfitValue(item);
     current.orderAmount = sumMoney(current.orderAmount, orderAmount);
-    current.profit = sumMoney(current.profit, profit);
+    current.profit = decimalMoney(current.profit).plus(profit).toString();
     totals.set(month, current);
   });
 
   return Array.from(totals.entries())
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([month, totals]) => ({ month, ...totals }));
+    .map(([month, totals]) => ({ month, ...totals, profit: decimalMoney(totals.profit).toFixed(2) }));
 }
 
 export function getDashboardLatestModifiedAt(orders: OrderRecord[], filters: DashboardFilters) {
@@ -126,7 +127,7 @@ export function getDashboardMetrics({ orders, department, startDate, endDate }: 
 
   return {
     totalOrderAmount: sumMoney(...filteredOrders.map(item => item.orderValue)),
-    grossProfit: sumMoney(...filteredOrders.map(item => item.grossProfit ?? differenceMoney(item.orderValue, item.purchaseAmount))),
+    grossProfit: sumMoney(...filteredOrders.map(grossProfitValue)),
     orderCount: orderGroups.size,
     accountsReceivable: sumMoney(...filteredOrders.map(item => item.accountsReceivable ??
       (compareMoney(item.orderValue, item.totalReceived) > 0 ? differenceMoney(item.orderValue, item.totalReceived) : '0.00'))),

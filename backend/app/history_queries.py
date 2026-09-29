@@ -49,6 +49,7 @@ def enrich_history(conn, rows):
         for r in conn.execute(text('SELECT sales_order_id, order_no FROM sales_order_number_history WHERE sales_order_id IN :ids ORDER BY history_order')
                               .bindparams(bindparam('ids', expanding=True)), {'ids': list(set(line_orders.values()))}).mappings():
             numbers[r['sales_order_id']].append(r['order_no'])
+    paths = source_order_paths(conn, line_ids)
     version_context=read_context(conn,ids)
     for r in items:
         r['edit_context']={'data_epoch':version_context['data_epoch'],'projects':{str(by_code[r['project_code']]):version_context['projects'][str(by_code[r['project_code']])]}}
@@ -57,10 +58,26 @@ def enrich_history(conn, rows):
         if r.get('order_line_id'):
             r['sales_order_id'] = line_orders[r['order_line_id']]
             r['order_number_history'] = numbers[r['sales_order_id']] or [r['order_no']]
+            if r['order_line_id'] in paths:
+                r['order_number_path'] = paths[r['order_line_id']]
             if r['order_line_id'] in source_lines:
                 r['manager_history'] = [r['account_manager']] if r.get('account_manager') else []
-                r['order_number_history'] = [r['order_no']]
     return items
+
+
+def source_order_paths(conn, line_ids):
+    from .source_import import source_order_chain
+    paths = {}
+    for start in range(0,len(line_ids),1000):
+        rows = conn.execute(text('''SELECT ol.id,
+            JSON_UNQUOTE(JSON_EXTRACT(r.raw_json,'$.values[12]')) AS original_number
+            FROM order_line ol JOIN ledger_raw_row r ON r.id=ol.raw_row_id
+            WHERE ol.source_preserved=1 AND ol.id IN :ids''').bindparams(bindparam('ids',expanding=True)),
+            {'ids':line_ids[start:start+1000]}).mappings()
+        for row in rows:
+            if row['original_number'] not in (None, '', 'null'):
+                paths[row['id']] = source_order_chain(row['original_number'],0)
+    return paths
 
 
 def enrich_phases(conn, items, table, date_column, amount_column, key):
@@ -76,3 +93,15 @@ def enrich_phases(conn, items, table, date_column, amount_column, key):
     for r in items:
         r[key] = groups[r['order_line_id']]
     return items
+
+
+def delivery_records(conn, line_ids):
+    if not line_ids:
+        return []
+    rows = conn.execute(text('''SELECT dr.id,dr.order_line_id,ol.goods_name,
+        dr.delivery_date,dr.delivery_quantity,dr.delivery_value,dr.delivery_revenue_no_tax
+        FROM delivery_record dr JOIN order_line ol ON ol.id=dr.order_line_id
+        WHERE dr.order_line_id IN :ids AND dr.deleted_at IS NULL
+        ORDER BY dr.order_line_id,dr.id''').bindparams(bindparam('ids', expanding=True)),
+        {'ids':list(line_ids)}).mappings().all()
+    return clean_rows(rows)

@@ -3,6 +3,7 @@
 用例先于实现编写：`ledger_import` 权限点、部门边界校验、共享字段保护。
 """
 from __future__ import annotations
+from account_fixtures import create_test_account
 
 import json
 from datetime import date
@@ -85,10 +86,7 @@ def _create_user(
     can_entry: bool = True,
     department_all: bool = True,
 ) -> dict:
-    return client.post(
-        "/api/auth/users",
-        headers=headers,
-        json={
+    return create_test_account(client, headers=headers, payload={
             "username": username,
             "password": USER_PASSWORD,
             "display_name": username,
@@ -98,8 +96,7 @@ def _create_user(
             "department_can_view": can_view,
             "department_can_entry": can_entry,
             "department_all": department_all,
-        },
-    )
+        })
 
 
 def _import(client: TestClient, headers: dict[str, str], rows: list[list[object]], name: str = "test.xlsx"):
@@ -175,8 +172,8 @@ def test_ledger_import_account_requires_explicit_department_policy(
     response = _create_user(
         client, headers, "implicit_all", ["ledger_import"], department_scope=[], department_all=False
     )
-    assert response.status_code == 400, response.text
-    assert "全部部门" in response.json()["detail"]
+    assert response.status_code == 200, response.text
+    assert _import(client, _login(client, "implicit_all"), [_row()]).status_code == 403
 
 
 def test_ledger_import_account_with_explicit_departments_is_accepted(
@@ -305,7 +302,9 @@ def test_legal_addition_to_existing_project_succeeds(client: TestClient, headers
 # --- 迁移 -------------------------------------------------------------------
 
 
-def test_legacy_permission_migration_only_extends_existing_admins(cleanup_users) -> None:
+def test_legacy_permission_migration_only_extends_existing_admins(
+    mysql_test_database, cleanup_users
+) -> None:
     """只有原本已带 system_admin 的账号追加 ledger_import；其余原样保留。"""
     legacy = {
         "legacy_admin": json.dumps(["order_entry", "system_admin"], ensure_ascii=False),
@@ -314,6 +313,12 @@ def test_legacy_permission_migration_only_extends_existing_admins(cleanup_users)
         "legacy_null": None,
     }
     with db() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM schema_migration "
+                "WHERE migration_key = '20260916_add_ledger_import_permission'"
+            )
+        )
         for username, permissions in legacy.items():
             cleanup_users.append(username)
             conn.execute(
@@ -366,14 +371,47 @@ def test_user_list_reports_effective_permissions_for_legacy_account(
     item = next(
         user for user in response.json()["items"] if user["username"] == "legacy_role_default"
     )
-    assert item["permissions_json"] is None
-    assert "system_admin" in item["effective_permissions"]
-    assert "ledger_import" in item["effective_permissions"]
+    assert item["scope_mode"] == "none"
+    assert item["permissions"] == []  # Unmapped legacy roles never imply active grants.
 
 
-def test_permission_migration_is_repeatable(cleanup_users) -> None:
+def test_applied_permission_migration_preserves_later_import_revocation(
+    mysql_test_database, cleanup_users
+) -> None:
+    """迁移完成后，显式撤销 ledger_import 必须在后续启动中保持有效。"""
+    cleanup_users.append("admin_without_import")
+    with db() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO erp_user
+                  (username, password_hash, display_name, role_code, permissions_json,
+                   department_scope_json, department_can_view, department_can_entry, is_active)
+                VALUES ('admin_without_import', 'unused', 'admin_without_import', 'viewer',
+                        '["system_admin"]', '[]', 0, 0, 1)
+                """
+            )
+        )
+        migrate_ledger_import_permission(conn)
+        permissions = json.loads(
+            conn.execute(
+                text("SELECT permissions_json FROM erp_user WHERE username = 'admin_without_import'")
+            ).scalar()
+        )
+
+    assert "system_admin" in permissions
+    assert "ledger_import" not in permissions
+
+
+def test_permission_migration_is_repeatable(mysql_test_database, cleanup_users) -> None:
     cleanup_users.append("legacy_repeat")
     with db() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM schema_migration "
+                "WHERE migration_key = '20260916_add_ledger_import_permission'"
+            )
+        )
         conn.execute(
             text(
                 """

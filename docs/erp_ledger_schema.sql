@@ -256,6 +256,17 @@ CREATE TABLE IF NOT EXISTS order_line (
   sales_unit_price DECIMAL(18,6) NULL,
   revenue_no_tax DECIMAL(18,2) NULL,
   order_value DECIMAL(18,2) NULL,
+  source_gross_profit DECIMAL(18,2) NULL,
+  source_order_value_precise DECIMAL(38,18) NULL,
+  source_purchase_amount_precise DECIMAL(38,18) NULL,
+  profit_tax_amount DECIMAL(38,18) NULL,
+  profit_tax_refund DECIMAL(38,18) NULL,
+  profit_inputs_initialized TINYINT NOT NULL DEFAULT 0,
+  line_order_date DATE NULL,
+  line_order_date_initialized TINYINT NOT NULL DEFAULT 0,
+  line_regional_platform VARCHAR(128) NULL,
+  line_customer_unit_name VARCHAR(255) NULL,
+  line_end_user_name VARCHAR(255) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted_at DATETIME NULL,
@@ -315,7 +326,7 @@ CREATE TABLE IF NOT EXISTS delivery_record (
 CREATE TABLE IF NOT EXISTS purchase_contract (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_line_id BIGINT UNSIGNED NOT NULL,
-  purchase_contract_no VARCHAR(64) NULL,
+  purchase_contract_no VARCHAR(255) NULL,
   payment_terms VARCHAR(255) NULL,
   performance_period VARCHAR(255) NULL,
   signed_amount DECIMAL(18,2) NULL,
@@ -325,7 +336,7 @@ CREATE TABLE IF NOT EXISTS purchase_contract (
   deleted_at DATETIME NULL,
   PRIMARY KEY (id),
   KEY idx_purchase_contract_line (order_line_id),
-  KEY idx_purchase_contract_no (purchase_contract_no),
+  KEY idx_purchase_contract_no (purchase_contract_no(64)),
   CONSTRAINT fk_purchase_contract_line FOREIGN KEY (order_line_id) REFERENCES order_line(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -335,7 +346,7 @@ CREATE TABLE IF NOT EXISTS purchase_invoice (
   phase_no INT UNSIGNED NOT NULL DEFAULT 1,
   received_invoice_date DATE NULL,
   received_invoice_date_text VARCHAR(255) NULL,
-  invoice_no VARCHAR(128) NULL,
+  invoice_no TEXT NULL,
   invoice_amount DECIMAL(18,2) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -344,7 +355,7 @@ CREATE TABLE IF NOT EXISTS purchase_invoice (
   PRIMARY KEY (id),
   UNIQUE KEY uk_purchase_invoice_active_phase (order_line_id, active_phase_no),
   KEY idx_purchase_invoice_line_phase (order_line_id, phase_no),
-  KEY idx_purchase_invoice_no (invoice_no),
+  KEY idx_purchase_invoice_no (invoice_no(128)),
   KEY idx_purchase_invoice_date (received_invoice_date),
   CONSTRAINT fk_purchase_invoice_line FOREIGN KEY (order_line_id) REFERENCES order_line(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -453,10 +464,10 @@ CREATE TABLE IF NOT EXISTS sales_invoice (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_line_id BIGINT UNSIGNED NOT NULL,
   phase_no INT UNSIGNED NOT NULL DEFAULT 1,
-  invoice_doc_no VARCHAR(128) NULL,
+  invoice_doc_no TEXT NULL,
   invoice_date DATE NULL,
   invoice_date_text VARCHAR(255) NULL,
-  invoice_no VARCHAR(128) NULL,
+  invoice_no TEXT NULL,
   invoice_amount DECIMAL(18,2) NULL,
   pending_invoice_amount DECIMAL(18,2) NULL,
   delivered_not_invoiced_amount DECIMAL(18,2) NULL,
@@ -467,8 +478,8 @@ CREATE TABLE IF NOT EXISTS sales_invoice (
   PRIMARY KEY (id),
   UNIQUE KEY uk_sales_invoice_active_phase (order_line_id, active_phase_no),
   KEY idx_sales_invoice_line_phase (order_line_id, phase_no),
-  KEY idx_sales_invoice_doc (invoice_doc_no),
-  KEY idx_sales_invoice_no (invoice_no),
+  KEY idx_sales_invoice_doc (invoice_doc_no(128)),
+  KEY idx_sales_invoice_no (invoice_no(128)),
   KEY idx_sales_invoice_date (invoice_date),
   CONSTRAINT fk_sales_invoice_line FOREIGN KEY (order_line_id) REFERENCES order_line(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -479,7 +490,7 @@ CREATE TABLE IF NOT EXISTS sales_receipt (
   phase_no INT UNSIGNED NOT NULL DEFAULT 1,
   receipt_date DATE NULL,
   receipt_date_text VARCHAR(255) NULL,
-  payment_notice_no VARCHAR(128) NULL,
+  payment_notice_no TEXT NULL,
   receipt_amount DECIMAL(18,2) NULL,
   receipt_ratio DECIMAL(30,6) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -489,7 +500,7 @@ CREATE TABLE IF NOT EXISTS sales_receipt (
   PRIMARY KEY (id),
   UNIQUE KEY uk_sales_receipt_active_phase (order_line_id, active_phase_no),
   KEY idx_sales_receipt_line_phase (order_line_id, phase_no),
-  KEY idx_sales_receipt_notice (payment_notice_no),
+  KEY idx_sales_receipt_notice (payment_notice_no(128)),
   KEY idx_sales_receipt_date (receipt_date),
   CONSTRAINT fk_sales_receipt_line FOREIGN KEY (order_line_id) REFERENCES order_line(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -504,12 +515,12 @@ SELECT
   CASE WHEN ol.source_preserved = 1 THEN ol.line_branch_company ELSE p.branch_company END AS branch_company,
   CASE WHEN ol.source_preserved = 1 THEN ol.line_account_manager ELSE p.account_manager END AS account_manager,
   CASE WHEN ol.source_preserved = 1 THEN ol.line_team_level3_name ELSE p.team_level3_name END AS team_level3_name,
-  so.order_date,
+  CASE WHEN ol.source_preserved = 1 THEN ol.line_order_date ELSE so.order_date END AS order_date,
   so.business_type,
   so.statistic_category,
-  sp.customer_unit_name,
-  sp.end_user_name,
-  sp.regional_platform,
+  CASE WHEN ol.source_preserved = 1 THEN ol.line_customer_unit_name ELSE sp.customer_unit_name END AS customer_unit_name,
+  CASE WHEN ol.source_preserved = 1 THEN ol.line_end_user_name ELSE sp.end_user_name END AS end_user_name,
+  CASE WHEN ol.source_preserved = 1 THEN ol.line_regional_platform ELSE sp.regional_platform END AS regional_platform,
   COALESCE(ol.project_name, p.project_name) AS project_name,
   GREATEST(
     p.updated_at,
@@ -578,7 +589,27 @@ SELECT
     WHEN COALESCE(ol.revenue_no_tax, 0) = 0 THEN 0
     ELSE (COALESCE(ol.revenue_no_tax, 0) - COALESCE(pi.cost_no_tax, 0)) / ol.revenue_no_tax * 100
   END AS gross_profit_margin_no_tax,
-  COALESCE(ol.order_value, 0) - COALESCE(pi.purchase_amount, 0) AS gross_profit
+  -- Retain the raw source precision only while the corresponding amount is
+  -- unchanged. Existing W/AC amounts and receivable/payable balances stay intact.
+  CASE WHEN ol.source_preserved=1 AND ROUND(ol.source_order_value_precise,2)=ol.order_value
+    THEN ol.source_order_value_precise ELSE COALESCE(ol.order_value,0) END AS profit_order_value,
+  CASE WHEN ol.source_preserved=1 AND ROUND(ol.source_purchase_amount_precise,2)=pi.purchase_amount
+    THEN ol.source_purchase_amount_precise ELSE COALESCE(pi.purchase_amount,0) END AS profit_purchase_amount,
+  CASE WHEN ol.source_preserved=1 THEN COALESCE(ol.profit_tax_amount,0)
+    ELSE COALESCE(ol.profit_tax_amount,
+      (COALESCE(ol.order_value,0)-COALESCE(ol.revenue_no_tax,0))
+      -(COALESCE(pi.purchase_amount,0)-COALESCE(pi.cost_no_tax,0))) END AS tax_difference,
+  COALESCE(ol.profit_tax_refund,0) AS tax_refund,
+  -- Gross profit is W - AC - BL + BM, never the archived BN result.
+  (CASE WHEN ol.source_preserved=1 AND ROUND(ol.source_order_value_precise,2)=ol.order_value
+    THEN ol.source_order_value_precise ELSE COALESCE(ol.order_value,0) END)
+  -(CASE WHEN ol.source_preserved=1 AND ROUND(ol.source_purchase_amount_precise,2)=pi.purchase_amount
+    THEN ol.source_purchase_amount_precise ELSE COALESCE(pi.purchase_amount,0) END)
+  -(CASE WHEN ol.source_preserved=1 THEN COALESCE(ol.profit_tax_amount,0)
+    ELSE COALESCE(ol.profit_tax_amount,
+      (COALESCE(ol.order_value,0)-COALESCE(ol.revenue_no_tax,0))
+      -(COALESCE(pi.purchase_amount,0)-COALESCE(pi.cost_no_tax,0))) END)
+  +COALESCE(ol.profit_tax_refund,0) AS gross_profit
 FROM project p
 JOIN sales_order so ON so.project_id = p.id AND so.deleted_at IS NULL
 JOIN order_line ol ON ol.sales_order_id = so.id AND ol.deleted_at IS NULL
@@ -586,7 +617,15 @@ JOIN order_line ol ON ol.sales_order_id = so.id AND ol.deleted_at IS NULL
 -- 必须从 sub_project 取，不能再用框架项目上的值（那是串值）。
 LEFT JOIN sub_project sp ON sp.id = ol.sub_project_id AND sp.deleted_at IS NULL
 LEFT JOIN purchase_info pi ON pi.order_line_id = ol.id AND pi.deleted_at IS NULL
-LEFT JOIN delivery_record dr ON dr.order_line_id = ol.id AND dr.deleted_at IS NULL
+LEFT JOIN (
+  SELECT order_line_id, MAX(delivery_date) AS delivery_date, MAX(updated_at) AS updated_at,
+         SUM(delivery_quantity) AS delivery_quantity, SUM(delivery_revenue_no_tax) AS delivery_revenue_no_tax,
+         SUM(delivery_value) AS delivery_value, SUM(delivery_cost_no_tax) AS delivery_cost_no_tax,
+         SUM(delivery_cost) AS delivery_cost, SUM(pending_delivery_quantity) AS pending_delivery_quantity,
+         SUM(pending_delivery_amount_no_tax) AS pending_delivery_amount_no_tax,
+         SUM(pending_delivery_amount) AS pending_delivery_amount
+  FROM delivery_record WHERE deleted_at IS NULL GROUP BY order_line_id
+) dr ON dr.order_line_id = ol.id
 LEFT JOIN (
   SELECT
     order_line_id,
@@ -716,6 +755,11 @@ GROUP BY v.project_code, v.order_no, v.department, v.branch_company, v.account_m
 
 CREATE TABLE IF NOT EXISTS business_state (id INT PRIMARY KEY, data_epoch BIGINT NOT NULL DEFAULT 1) ENGINE=InnoDB;
 INSERT IGNORE INTO business_state (id,data_epoch) VALUES (1,1);
+
+CREATE TABLE IF NOT EXISTS schema_migration (
+  migration_key VARCHAR(191) NOT NULL PRIMARY KEY,
+  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS legacy_import_audit_source (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

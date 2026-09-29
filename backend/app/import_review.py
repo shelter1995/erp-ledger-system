@@ -112,7 +112,7 @@ def summary(conn, batch_id):
 
 
 def assert_batch_access(conn, batch, user):
-    if 'system_admin' not in user.permissions and batch['uploaded_by'] != user.id:
+    if user.account_type != 'super_admin' and batch['uploaded_by'] != user.id:
         raise HTTPException(404,'导入批次不存在或无权访问')
     for row in batch_lines(conn,batch['id']):
         department = row['line_department'] if row['source_preserved'] else conn.execute(text('SELECT department FROM project WHERE id=:id'),{'id':row['project_id']}).scalar()

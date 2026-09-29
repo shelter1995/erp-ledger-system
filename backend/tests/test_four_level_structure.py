@@ -3,6 +3,7 @@
 全部使用合成数据，在隔离数据库上验证，不以“真实文件导入成功”作为完成标准。
 """
 from __future__ import annotations
+from account_fixtures import create_test_account
 
 from datetime import date
 from decimal import Decimal
@@ -97,10 +98,7 @@ def test_framework_code_reuse_without_department_rights_is_rejected(
 ) -> None:
     """无权部门的账号复用已有框架编号：403，框架归属和明细均不变。"""
     assert _import(client, headers, [_row()], "first.xlsx").status_code == 200
-    created = client.post(
-        "/api/auth/users",
-        headers=headers,
-        json={
+    created = create_test_account(client, headers=headers, payload={
             "username": "level-dept-user",
             "password": USER_PASSWORD,
             "display_name": "level-dept-user",
@@ -110,8 +108,7 @@ def test_framework_code_reuse_without_department_rights_is_rejected(
             "department_can_view": True,
             "department_can_entry": True,
             "department_all": False,
-        },
-    )
+        })
     assert created.status_code == 200, created.text
     try:
         login = client.post(

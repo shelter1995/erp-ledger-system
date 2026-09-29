@@ -33,8 +33,12 @@ def test_quantity_migration_handles_uppercase_metadata(monkeypatch, precision, s
         class MigrationConnection:
             def execute(self, statement, parameters=None):
                 sql = str(statement)
+                if 'line_order_date_initialized=0' in sql or 'profit_inputs_initialized=0' in sql:
+                    return metadata.execute(text('SELECT 1 WHERE 0'))
                 if "numeric_precision" in sql.lower():
                     return metadata.execute(statement, parameters)
+                if "character_maximum_length" in sql.lower():
+                    return metadata.execute(text("SELECT 65535"))
                 if sql.lstrip().startswith("ALTER TABLE"):
                     alterations.append(sql)
                 # Other migration columns and indexes already exist.

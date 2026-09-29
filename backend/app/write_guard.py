@@ -86,6 +86,8 @@ def business_write() -> Iterator[Connection]:
         try:
             with connection.begin():
                 from .edit_versions import start_write, finish_write
+                from .account_service import revalidate_write
+                revalidate_write(connection)
                 start_write(connection)
                 yield connection
                 finish_write(connection)

@@ -1,15 +1,17 @@
-import React, { useState } from 'react';
+import { accountApi, AggregateData, Department } from '../api';
+import React, { useState, useEffect } from 'react';
 import {
-  ArrowDownLeft,
   ArrowRight,
-  ArrowUpRight,
+  BadgeDollarSign,
   Calendar,
   CheckCircle2,
+  ClipboardList,
   Filter,
+  HandCoins,
+  ReceiptText,
   RefreshCw,
-  ShoppingCart,
   TrendingUp,
-  Wallet,
+  Truck,
 } from 'lucide-react';
 import { OperationLog, OrderRecord, ProjectLedger, ScreenType } from '../types';
 import {
@@ -22,6 +24,8 @@ import {
 import { approximateMoney, decimalMoney, formatMoney as formatExactMoney, type MoneyValue } from '../lib/money';
 
 interface DashboardScreenProps {
+  serverMode?: boolean;
+  showLogs?: boolean;
   logs: OperationLog[];
   ledgers: ProjectLedger[];
   orders: OrderRecord[];
@@ -51,20 +55,25 @@ function smoothPath(points: TrendPoint[]) {
   }, `M ${points[0].x} ${points[0].y}`);
 }
 
-export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: DashboardScreenProps) {
+export default function DashboardScreen({ logs, ledgers, orders, onNavigate, serverMode = false, showLogs = true }: DashboardScreenProps) {
   const [hoveredTrendIndex, setHoveredTrendIndex] = useState<number | null>(null);
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
-  const departmentOptions = getDashboardDepartments(orders);
+  const [aggregate,setAggregate]=useState<Omit<AggregateData,'items'>|null>(null);
+  const [departments,setDepartments]=useState<Department[]>([]);
+  const [loadError,setLoadError]=useState('');
+  useEffect(()=>{if(!serverMode)return;let active=true;setLoadError('');accountApi.dashboard({department:selectedDepartment,start_date:startDate,end_date:endDate}).then(r=>{if(active)setAggregate(r);}).catch(e=>{if(active)setLoadError(e.message);});return()=>{active=false;};},[serverMode,selectedDepartment,startDate,endDate]);
+  useEffect(()=>{if(serverMode)accountApi.departments().then(r=>setDepartments(r.items)).catch(e=>setLoadError(e.message));},[serverMode]);
+  const departmentOptions = serverMode ? departments.filter(d=>d.is_active).map(d=>d.name) : getDashboardDepartments(orders);
   const dashboardFilters = { department: selectedDepartment, startDate, endDate };
-  const dashboardMetrics = getDashboardMetrics({ ledgers, orders, ...dashboardFilters });
-  const salesRanking = getDashboardSalesRanking(orders, selectedDepartment, startDate, endDate);
+  const dashboardMetrics = (serverMode ? aggregate?.metrics : null) || getDashboardMetrics({ ledgers, orders, ...dashboardFilters });
+  const salesRanking = (serverMode ? aggregate?.ranking : null) || getDashboardSalesRanking(orders, selectedDepartment, startDate, endDate);
   const salesRankingTitle = selectedDepartment ? '三级团队销售订单金额排行' : '部门销售订单金额排行';
   const recentLogs = logs.slice(0, 5);
-  const trendData = getDashboardTrendData(orders, dashboardFilters);
-  const latestModifiedAt = getDashboardLatestModifiedAt(orders, dashboardFilters);
+  const trendData = (serverMode ? aggregate?.trends : null) || getDashboardTrendData(orders, dashboardFilters);
+  const latestModifiedAt = (serverMode ? aggregate?.latestModifiedAt : null) || getDashboardLatestModifiedAt(orders, dashboardFilters);
   const maxTrendValue = Math.max(...trendData.flatMap((item) => [approximateMoney(item.orderAmount), approximateMoney(item.profit)]), 1);
   const toPoint = (value: MoneyValue, index: number): TrendPoint => ({
     x: trendData.length === 1 ? 300 : (index / (trendData.length - 1)) * 600,
@@ -84,21 +93,45 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
 
   const maxRankingAmount = Math.max(...salesRanking.map((item) => approximateMoney(item.amount)), 1);
 
-  const metrics = [
-    { label: '销售订单总金额', value: compactMoney(dashboardMetrics.totalOrderAmount), icon: Wallet },
-    { label: '毛利润', value: compactMoney(dashboardMetrics.grossProfit), icon: TrendingUp },
-    { label: '订单总数', value: `${dashboardMetrics.orderCount.toLocaleString('zh-CN')} 个`, icon: ShoppingCart },
-    { label: '交付应收款', value: compactMoney(dashboardMetrics.deliveryAccountsReceivable), icon: ArrowDownLeft },
-    { label: '开票应收款', value: compactMoney(dashboardMetrics.invoiceAccountsReceivable), icon: ArrowDownLeft },
-    { label: '应付账款', value: compactMoney(dashboardMetrics.accountsPayable), icon: ArrowUpRight },
-    { label: '已关闭订单', value: `${dashboardMetrics.closedCount.toLocaleString('zh-CN')} 个`, icon: CheckCircle2 },
+  const coreMetrics = [
+    {
+      label: '销售订单总金额',
+      value: compactMoney(dashboardMetrics.totalOrderAmount),
+      description: '当前筛选范围内的订单金额',
+      icon: BadgeDollarSign,
+      iconClass: 'bg-blue-50 text-blue-700',
+      accentClass: 'border-t-blue-600',
+    },
+    {
+      label: '毛利润',
+      value: compactMoney(dashboardMetrics.grossProfit),
+      description: '订单金额－采购金额－税金＋退税',
+      icon: TrendingUp,
+      iconClass: 'bg-emerald-50 text-emerald-700',
+      accentClass: 'border-t-emerald-600',
+    },
+    {
+      label: '订单总数',
+      value: `${dashboardMetrics.orderCount.toLocaleString('zh-CN')} 个`,
+      description: '按销售订单号去重统计',
+      icon: ClipboardList,
+      iconClass: 'bg-slate-100 text-slate-700',
+      accentClass: 'border-t-slate-500',
+    },
+  ] as const;
+
+  const fulfillmentMetrics = [
+    { label: '交付应收款', value: compactMoney(dashboardMetrics.deliveryAccountsReceivable), description: '已交付但尚未回款', icon: Truck, iconClass: 'bg-sky-50 text-sky-700' },
+    { label: '开票应收款', value: compactMoney(dashboardMetrics.invoiceAccountsReceivable), description: '已开票但尚未回款', icon: ReceiptText, iconClass: 'bg-indigo-50 text-indigo-700' },
+    { label: '应付账款', value: compactMoney(dashboardMetrics.accountsPayable), description: '采购金额减已付款金额', icon: HandCoins, iconClass: 'bg-amber-50 text-amber-700' },
+    { label: '已关闭订单', value: `${dashboardMetrics.closedCount.toLocaleString('zh-CN')} 个`, description: '当前筛选范围内已关闭', icon: CheckCircle2, iconClass: 'bg-emerald-50 text-emerald-700' },
   ] as const;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">仪表盘概览</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">仪表盘概览</h1>{loadError&&<p role="alert" className="text-red-700">{loadError}</p>}
           <p className="text-sm text-slate-500 font-sans mt-1">欢迎回来，这是今天的业务实时动态。</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 self-start sm:self-center">
@@ -148,25 +181,55 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
-        {metrics.map((metric) => {
-          const Icon = metric.icon;
-          return (
-            <div
-              key={metric.label}
-              className="bg-white border border-slate-200/80 p-4 rounded-xl shadow-sm hover:-translate-y-0.5 transition-all duration-300"
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className="text-slate-500 font-medium text-xs">{metric.label}</span>
-                <div className="p-1.5 bg-blue-50 rounded-lg">
-                  <Icon className="w-4 h-4 text-blue-600" />
+      <section className="space-y-3" aria-labelledby="core-metrics-heading">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="core-metrics-heading" className="text-sm font-semibold text-slate-900">核心经营指标</h2>
+          <p className="text-xs text-slate-500">按当前部门与销售订单日期统计</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {coreMetrics.map((metric) => {
+            const Icon = metric.icon;
+            return (
+              <article key={metric.label} className={`rounded-xl border border-t-2 border-slate-200 bg-white p-5 shadow-sm ${metric.accentClass}`}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-600">{metric.label}</p>
+                    <p className="mt-3 text-3xl font-extrabold tracking-tight text-slate-950 tabular-nums">{metric.value}</p>
+                    <p className="mt-2 text-xs text-slate-500">{metric.description}</p>
+                  </div>
+                  <div className={`shrink-0 rounded-lg p-2.5 ${metric.iconClass}`}>
+                    <Icon className="h-5 w-5" />
+                  </div>
                 </div>
-              </div>
-              <div className="text-xl font-bold text-slate-900 tracking-tight font-sans">{metric.value}</div>
-            </div>
-          );
-        })}
-      </div>
+              </article>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-3 pt-2">
+          <h3 className="shrink-0 text-xs font-semibold text-slate-600">资金与履约</h3>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          {fulfillmentMetrics.map((metric) => {
+            const Icon = metric.icon;
+            return (
+              <article key={metric.label} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-slate-600">{metric.label}</p>
+                    <p className="mt-2 text-2xl font-bold tracking-tight text-slate-950 tabular-nums">{metric.value}</p>
+                    <p className="mt-1.5 text-xs text-slate-500">{metric.description}</p>
+                  </div>
+                  <div className={`shrink-0 rounded-lg p-2 ${metric.iconClass}`}>
+                    <Icon className="h-4 w-4" />
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
@@ -278,7 +341,7 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      {showLogs && <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="p-5 border-b border-slate-200 flex justify-between items-center">
           <h3 className="font-semibold text-slate-900 text-sm">操作日志</h3>
           <div className="flex items-center gap-2">
@@ -329,14 +392,14 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate }: D
 
         <div className="p-4 bg-slate-50/50 border-t border-slate-100 flex justify-center">
           <button
-            onClick={() => onNavigate('system')}
+            onClick={() => onNavigate('logs')}
             className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 hover:gap-1.5 transition-all"
           >
             <span>查看全部日志</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

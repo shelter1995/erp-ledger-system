@@ -32,6 +32,23 @@ def touch_line(conn, line_id):
     if pid is not None: touch_project(conn,pid)
 
 
+def touch_lines(conn, line_ids):
+    """Mark projects for many lines without one ownership query per line."""
+    ids = sorted({int(line_id) for line_id in line_ids})
+    for start in range(0, len(ids), 1000):
+        chunk = ids[start:start + 1000]
+        projects = conn.execute(
+            text(
+                'SELECT DISTINCT so.project_id FROM order_line ol '
+                'JOIN sales_order so ON so.id=ol.sales_order_id '
+                'WHERE ol.id IN :ids'
+            ).bindparams(bindparam('ids', expanding=True)),
+            {'ids': chunk},
+        ).scalars().all()
+        for project_id in projects:
+            touch_project(conn, project_id)
+
+
 def bump_epoch(conn):
     conn.execute(text('UPDATE business_state SET data_epoch=data_epoch+1 WHERE id=1'))
 

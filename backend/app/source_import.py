@@ -12,7 +12,7 @@ import json
 
 from fastapi import HTTPException
 from openpyxl import load_workbook
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from .importer import import_excel, validate_template_numbers
 from .ledger_excel import (
@@ -21,12 +21,22 @@ from .ledger_excel import (
     normalize_standard_row,
     standard_template_version,
 )
-from .legacy_ledger_parser import parse_date_sequence, parse_amount_sequence, parse_document_sequence
+from .legacy_ledger_parser import (
+    merge_order_number_history,
+    parse_amount_sequence,
+    parse_date_sequence,
+    parse_document_sequence,
+)
 from .legacy_import_service import FINANCE_SOURCES, PHASE_TABLE_COLUMNS
+from .ledger_history import merge_chain
 from .validation import validate_business_date
-from .financial_calculations import refresh_balances
-from .edit_versions import touch_line
-from .historical_project_identity import resolve_project_code
+from .financial_calculations import refresh_balances_many, update_fields_many
+from .edit_versions import touch_lines
+from .historical_project_identity import (
+    ProjectResolution,
+    _is_generated_temporary_code,
+    resolve_project_code,
+)
 
 
 TRANSITIONAL_91_HEADERS = (
@@ -35,6 +45,8 @@ TRANSITIONAL_91_HEADERS = (
     + TEMPLATE_HEADERS[87:92]
 )
 TRANSITIONAL_92_HEADERS = LEGACY_TEMPLATE_HEADERS[:87] + TEMPLATE_HEADERS[87:92]
+MAX_ORDER_NUMBER_LENGTH = 64
+SOURCE_IMPORT_HISTORY_SOURCE = 'source_import'
 
 
 def source_template_layout(headers):
@@ -93,6 +105,158 @@ def source_phases(date_value, amount_value, document_value):
         dates.blocking or len(dates.values) > 1 or (total is not None and actual_date is None))
 
 
+def source_order_chain(value, row_no):
+    parsed = merge_order_number_history([value], order_key=source_text(value) or '')
+    if parsed.blocking:
+        detail = '；'.join(issue.message for issue in parsed.issues if issue.blocking)
+        raise ValueError(f'第 {row_no} 行销售订单号无效：{detail}')
+    chain = [str(item).strip() for item in parsed.values if str(item).strip()]
+    if not chain:
+        raise ValueError(f'第 {row_no} 行缺少销售订单号')
+    overlong = next((item for item in chain if len(item) > MAX_ORDER_NUMBER_LENGTH), None)
+    if overlong:
+        raise ValueError(
+            f'第 {row_no} 行销售订单号中的单个编号“{overlong}”超过 '
+            f'{MAX_ORDER_NUMBER_LENGTH} 个字符'
+        )
+    return chain
+
+
+def _project_resolution_state(conn, order_groups):
+    """Prefetch the two lookups otherwise repeated for every source order."""
+    order_nos = sorted(order_groups)
+    official_codes = sorted({
+        str(row[1]).strip()
+        for grouped_rows in order_groups.values()
+        for _, row in grouped_rows
+        if str(row[1] or '').strip()
+    })
+    projects_by_order = {}
+    for start in range(0, len(order_nos), 1000):
+        rows = conn.execute(
+            text('''SELECT DISTINCT so.order_no,p.project_code
+                FROM sales_order so JOIN project p ON p.id=so.project_id
+                WHERE so.order_no IN :order_nos AND so.deleted_at IS NULL
+                AND p.deleted_at IS NULL''').bindparams(bindparam('order_nos', expanding=True)),
+            {'order_nos': order_nos[start:start + 1000]},
+        ).mappings()
+        for row in rows:
+            projects_by_order.setdefault(str(row['order_no']), []).append(str(row['project_code']))
+    deleted_official_codes = set()
+    for start in range(0, len(official_codes), 1000):
+        rows = conn.execute(
+            text('SELECT project_code,deleted_at FROM project WHERE project_code IN :codes')
+            .bindparams(bindparam('codes', expanding=True)),
+            {'codes': official_codes[start:start + 1000]},
+        ).mappings()
+        deleted_official_codes.update(
+            str(row['project_code']) for row in rows if row['deleted_at'] is not None
+        )
+    return projects_by_order, deleted_official_codes
+
+
+def _has_other_temporary_project(projects_by_order, order_no, official_code):
+    return any(
+        code != official_code and _is_generated_temporary_code(code, order_no)
+        for code in projects_by_order.get(order_no, [])
+    )
+
+
+def persist_order_histories(conn, line_ids, order_chains):
+    if not line_ids:
+        return
+    rows = conn.execute(
+        text('''SELECT ol.id AS order_line_id,so.id AS sales_order_id,so.project_id
+            FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id
+            WHERE ol.id IN :ids''').bindparams(bindparam('ids', expanding=True)),
+        {'ids': list(line_ids.values())},
+    ).mappings().all()
+    owners = {int(row['order_line_id']): row for row in rows}
+    targets = {}
+    for row_no, line_id in line_ids.items():
+        owner = owners[int(line_id)]
+        sales_order_id = int(owner['sales_order_id'])
+        chain = list(order_chains[row_no])
+        previous = targets.get(sales_order_id)
+        if previous and previous['chain'] != chain:
+            raise ValueError(
+                f'第 {row_no} 行销售订单号历史链与同一订单的其他行不一致，'
+                '请统一后重新导入'
+            )
+        targets[sales_order_id] = {
+            'chain': chain,
+            'project_id': int(owner['project_id']),
+            'row_no': row_no,
+        }
+
+    order_ids = sorted(targets)
+    project_ids = sorted({target['project_id'] for target in targets.values()})
+    history_rows = conn.execute(
+        text(
+            'SELECT sales_order_id,order_no,history_order '
+            'FROM sales_order_number_history WHERE sales_order_id IN :ids '
+            'ORDER BY sales_order_id,history_order'
+        ).bindparams(bindparam('ids', expanding=True)),
+        {'ids': order_ids},
+    ).mappings().all()
+    histories = {}
+    for history in history_rows:
+        histories.setdefault(int(history['sales_order_id']), []).append(str(history['order_no']))
+
+    # One project-scoped read replaces a conflict query for every alias. It also
+    # sees current numbers created earlier in this same import transaction.
+    occupancy_rows = conn.execute(
+        text(
+            'SELECT so.id,so.project_id,so.order_no,h.order_no AS history_order_no '
+            'FROM sales_order so LEFT JOIN sales_order_number_history h '
+            'ON h.sales_order_id=so.id '
+            'WHERE so.deleted_at IS NULL AND so.project_id IN :ids'
+        ).bindparams(bindparam('ids', expanding=True)),
+        {'ids': project_ids},
+    ).mappings().all()
+    current_numbers = {}
+    occupied = {}
+    for row in occupancy_rows:
+        order_id = int(row['id'])
+        project_id = int(row['project_id'])
+        current_numbers[order_id] = str(row['order_no'])
+        for number in (row['order_no'], row['history_order_no']):
+            if number not in (None, ''):
+                occupied.setdefault((project_id, str(number)), set()).add(order_id)
+
+    inserts = []
+    for sales_order_id, target in targets.items():
+        chain = target['chain']
+        conflicts = {
+            number
+            for number in chain
+            if occupied.get((target['project_id'], number), set()) - {sales_order_id}
+        }
+        if conflicts:
+            numbers = '、'.join(sorted(conflicts))
+            raise ValueError(
+                f"第 {target['row_no']} 行销售订单号 {numbers} 已属于同一项目的其他订单，"
+                '不能作为本订单的历史编号'
+            )
+        existing = histories.get(sales_order_id) or [current_numbers[sales_order_id]]
+        merged = merge_chain(existing, chain, what='订单号')
+        if merged.blocked:
+            raise ValueError(f"第 {target['row_no']} 行{merged.reason}")
+        inserts.extend({
+            'sales_order_id': sales_order_id,
+            'order_no': order_no,
+            'history_order': history_order,
+            'source': SOURCE_IMPORT_HISTORY_SOURCE,
+        } for history_order, order_no in enumerate(merged.chain, 1))
+
+    statement = text('''INSERT INTO sales_order_number_history
+        (sales_order_id,order_no,history_order,source)
+        VALUES (:sales_order_id,:order_no,:history_order,:source)
+        ON DUPLICATE KEY UPDATE order_no=VALUES(order_no),source=VALUES(source)''')
+    for start in range(0, len(inserts), 1000):
+        conn.execute(statement, inserts[start:start + 1000])
+
+
 def import_source(conn, content, filename, user, *, preview=False, duplicate_confirmation=None):
     digest = sha256(content).hexdigest()
     existing = conn.execute(text("SELECT id,success_rows FROM import_batch WHERE source_sha256=:sha AND status IN ('completed','reverted') LIMIT 1"), {'sha':digest}).mappings().first()
@@ -110,6 +274,7 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
     # Sales document number and invoice number are separate source columns.
     groups['sales_invoice'] = ((74, 76, 75),)
     prepared_rows = []
+    order_chains = {}
     order_groups = {}
     for row_no, cells in enumerate(ws.iter_rows(min_row=3), 3):
         values = [c.value for c in cells]
@@ -120,11 +285,14 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
         row = normalize_source_row(values, version)
         if not row[12] or not row[14]:
             raise ValueError(f'第 {row_no} 行缺少销售订单号或物资/服务名称')
+        order_chain = source_order_chain(row[12], row_no)
         originals[row_no] = row[:]
-        order_no = str(row[12]).strip()
+        order_chains[row_no] = order_chain
+        order_no = order_chain[-1]
         prepared_rows.append((row_no, cells, row))
         order_groups.setdefault(order_no, []).append((row_no, row))
 
+    projects_by_order, deleted_official_codes = _project_resolution_state(conn, order_groups)
     reserved_codes = set()
     effective_codes = {}
     for order_no, grouped_rows in order_groups.items():
@@ -140,24 +308,39 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
                 official_rows = [(row_no, row) for row_no, row in grouped_rows
                                  if str(row[1]).strip() == official_code]
                 first_row_no, first_row = official_rows[0]
-                resolution = resolve_project_code(
-                    conn,
-                    project_code=official_code,
-                    order_no=order_no,
-                    first_goods_name=first_row[14],
-                    reserved_codes=reserved_codes,
-                    reconcile_temporary=False,
+                resolution = (
+                    resolve_project_code(
+                        conn,
+                        project_code=official_code,
+                        order_no=order_no,
+                        first_goods_name=first_row[14],
+                        reserved_codes=reserved_codes,
+                        reconcile_temporary=False,
+                    )
+                    if _has_other_temporary_project(
+                        projects_by_order, order_no, official_code
+                    )
+                    else ProjectResolution(official_code)
                 )
                 for row_no, _ in official_rows:
                     effective_codes[row_no] = resolution.project_code
             continue
         first_row_no, first_row = grouped_rows[0]
-        resolution = resolve_project_code(
-            conn,
-            project_code=next(iter(official_codes), None),
-            order_no=order_no,
-            first_goods_name=first_row[14],
-            reserved_codes=reserved_codes,
+        official_code = next(iter(official_codes), None)
+        if official_code in deleted_official_codes:
+            raise ValueError(f'正式项目编号 {official_code} 已被停用，不能自动恢复或合并')
+        resolution = (
+            resolve_project_code(
+                conn,
+                project_code=official_code,
+                order_no=order_no,
+                first_goods_name=first_row[14],
+                reserved_codes=reserved_codes,
+            )
+            if official_code is None or _has_other_temporary_project(
+                projects_by_order, order_no, official_code
+            )
+            else ProjectResolution(official_code)
         )
         for row_no, _ in grouped_rows:
             effective_codes[row_no] = resolution.project_code
@@ -166,6 +349,7 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
 
     for row_no, cells, row in prepared_rows:
         row[1] = effective_codes[row_no]
+        row[12] = order_chains[row_no][-1]
         for col in (19,25):
             original_col = source_column(version, col)
             if original_col and cells[original_col-1].data_type == 'e':
@@ -186,6 +370,9 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
             for columns in sources:
                 for col in columns:
                     row[col-1] = None
+        # Prevent the normalized base import from creating a due-date-only
+        # payment that this authoritative phase import would immediately delete.
+        row[53] = None
         row[72] = None  # invoice_doc_no is restored with the sales invoice records
         # Excel binary precision is normalized to the database's documented scale.
         # Original unrounded values remain in the positional source archive.
@@ -212,51 +399,137 @@ def import_source(conn, content, filename, user, *, preview=False, duplicate_con
     if duplicates['count'] and not preview and duplicate_confirmation != duplicates['confirmation_token']:
         raise HTTPException(409, '发现疑似重复明细或比对结果已变化，请重新预检并确认保留后再导入')
     normalized = BytesIO(); wb.save(normalized); wb.close()
+    source_archives = {}
+    for row_no, row in originals.items():
+        raw = json.dumps(
+            {'headers': TEMPLATE_HEADERS, 'values': row},
+            ensure_ascii=False,
+            default=source_text,
+        )
+        source_archives[row_no] = {
+            'raw_json': raw,
+            'row_hash': sha256((str(row_no) + ':' + raw).encode()).hexdigest(),
+        }
     ids = {}
     result = import_excel(conn, reset=False, workbook_bytes=normalized.getvalue(), source_file_name=filename,
-                          user=user, strict_template=True, preserve_source=True, line_id_map=ids)
+                          user=user, strict_template=True, preserve_source=True,
+                          line_id_map=ids, source_archives=source_archives)
     if result['failed_rows']:
         from .import_report import ImportReportError
         raise ImportReportError(result)
+    persist_order_histories(conn, ids, order_chains)
     written = Counter()
+    phase_inserts = {}
+    authoritative = {
+        'order_line': [],
+        'purchase_info': [],
+        'delivery_record': [],
+    }
     for row_no, line_id in ids.items():
         row = originals[row_no]
-        raw = json.dumps({'headers':TEMPLATE_HEADERS,'values':row}, ensure_ascii=False, default=source_text)
-        conn.execute(text('UPDATE ledger_raw_row r JOIN order_line ol ON ol.raw_row_id=r.id SET r.raw_json=CAST(:raw AS JSON),r.row_hash=:hash WHERE ol.id=:id'),
-                     {'id':line_id,'raw':raw,'hash':sha256((str(row_no)+':'+raw).encode()).hexdigest()})
-        # Authoritative source totals take precedence over rounding from unit prices.
         for table, mapping in {
-            'order_line': {'sales_unit_price_no_tax':20,'sales_unit_price':21,'revenue_no_tax':22,'order_value':23},
-            'purchase_info': {'purchase_unit_price_no_tax':26,'purchase_unit_price':27,'cost_no_tax':28,'purchase_amount':29},
-            'delivery_record': {'delivery_revenue_no_tax':32,'delivery_value':33,'delivery_cost_no_tax':34,'delivery_cost':35,
-                                'pending_delivery_quantity':36,'pending_delivery_amount_no_tax':37,'pending_delivery_amount':38},
+            'order_line': {
+                'sales_unit_price_no_tax': 20,
+                'sales_unit_price': 21,
+                'revenue_no_tax': 22,
+                'order_value': 23,
+            },
+            'purchase_info': {
+                'purchase_unit_price_no_tax': 26,
+                'purchase_unit_price': 27,
+                'cost_no_tax': 28,
+                'purchase_amount': 29,
+            },
+            'delivery_record': {
+                'delivery_revenue_no_tax': 32,
+                'delivery_value': 33,
+                'delivery_cost_no_tax': 34,
+                'delivery_cost': 35,
+                'pending_delivery_quantity': 36,
+                'pending_delivery_amount_no_tax': 37,
+                'pending_delivery_amount': 38,
+            },
         }.items():
-            params = {'id':line_id}
-            assignments = []
+            values = {'id': line_id}
             for field, col in mapping.items():
-                value = row[col-1]
-                params[field] = None if value in (None,'') else Decimal(str(value)).quantize(
-                    Decimal('.000001') if 'unit_price' in field or field.endswith('quantity') else Decimal('.01'), rounding=ROUND_HALF_UP)
-                assignments.append(f'{field}=:{field}')
-            key = 'id' if table == 'order_line' else 'order_line_id'
-            conn.execute(text(f"UPDATE {table} SET {','.join(assignments)} WHERE {key}=:id"), params)
+                value = row[col - 1]
+                values[field] = None if value in (None, '') else Decimal(str(value)).quantize(
+                    Decimal('.000001')
+                    if 'unit_price' in field or field.endswith('quantity')
+                    else Decimal('.01'),
+                    rounding=ROUND_HALF_UP,
+                )
+            authoritative[table].append(values)
         for name, phases in records[row_no].items():
-            dc, nc, ac = PHASE_TABLE_COLUMNS[name]
-            # A due-date-only payment created by the base importer belongs to phase 1.
-            if name == 'purchase_payment' and phases:
-                conn.execute(text('DELETE FROM purchase_payment WHERE order_line_id=:id'), {'id':line_id})
             for no, (dt, dt_text, amount, document) in enumerate(phases, 1):
-                conn.execute(text(f'INSERT INTO {name} (order_line_id,phase_no,{dc},{dc}_text,{ac},{nc}) VALUES (:id,:phase,:date,:date_text,:amount,:document)'),
-                             {'id':line_id,'phase':no,'date':dt,'date_text':dt_text,'amount':amount,'document':document})
+                params = {
+                    'id': line_id,
+                    'phase': no,
+                    'date': dt,
+                    'date_text': dt_text,
+                    'amount': amount,
+                    'document': document,
+                }
                 if name == 'sales_invoice':
-                    conn.execute(text('UPDATE sales_invoice SET invoice_doc_no=:doc WHERE order_line_id=:id AND phase_no=:phase'),
-                                 {'id':line_id,'phase':no,'doc':source_text(row[72])})
+                    params['invoice_doc_no'] = source_text(row[72])
+                elif name == 'purchase_payment':
+                    if no == 1 and row[53] is not None:
+                        from .importer import _as_date
+                        params['due_payment_date'] = _as_date(row[53])
+                    else:
+                        params['due_payment_date'] = None
+                phase_inserts.setdefault(name, []).append(params)
                 written[name] += 1
-            if name == 'purchase_payment' and phases and row[53] is not None:
-                from .importer import _as_date
-                conn.execute(text('UPDATE purchase_payment SET due_payment_date=:due WHERE order_line_id=:id AND phase_no=1'),{'id':line_id,'due':_as_date(row[53])})
-        touch_line(conn, line_id)
-        refresh_balances(conn, line_id)
+    update_fields_many(
+        conn,
+        'order_line',
+        'id',
+        authoritative['order_line'],
+        ('sales_unit_price_no_tax', 'sales_unit_price', 'revenue_no_tax', 'order_value'),
+    )
+    update_fields_many(
+        conn,
+        'purchase_info',
+        'order_line_id',
+        authoritative['purchase_info'],
+        ('purchase_unit_price_no_tax', 'purchase_unit_price', 'cost_no_tax', 'purchase_amount'),
+    )
+    update_fields_many(
+        conn,
+        'delivery_record',
+        'order_line_id',
+        authoritative['delivery_record'],
+        (
+            'delivery_revenue_no_tax',
+            'delivery_value',
+            'delivery_cost_no_tax',
+            'delivery_cost',
+            'pending_delivery_quantity',
+            'pending_delivery_amount_no_tax',
+            'pending_delivery_amount',
+        ),
+    )
+    for name, rows in phase_inserts.items():
+        dc, nc, ac = PHASE_TABLE_COLUMNS[name]
+        extra_column = ',invoice_doc_no' if name == 'sales_invoice' else (
+            ',due_payment_date' if name == 'purchase_payment' else ''
+        )
+        extra_value = ',:invoice_doc_no' if name == 'sales_invoice' else (
+            ',:due_payment_date' if name == 'purchase_payment' else ''
+        )
+        statement = text(
+            f'INSERT INTO {name} '
+            f'(order_line_id,phase_no,{dc},{dc}_text,{ac},{nc}{extra_column}) '
+            f'VALUES (:id,:phase,:date,:date_text,:amount,:document{extra_value})'
+        )
+        for start in range(0, len(rows), 1000):
+            conn.execute(statement, rows[start:start + 1000])
+    # Preview is rolled back and its response reads the live financial view, so
+    # stored compatibility fields and project versions do not need a trial write.
+    # A real import performs the same finalization in bounded batches.
+    if not preview:
+        touch_lines(conn, ids.values())
+        refresh_balances_many(conn, ids.values())
     conn.execute(text('UPDATE import_batch SET source_sha256=:sha WHERE id=:id'), {'sha':digest,'id':result['batch_id']})
     return {**result,'source_sha256':digest,'warnings':warnings,'phase_counts':dict(written),'source_preserved':True,
             'layout':{

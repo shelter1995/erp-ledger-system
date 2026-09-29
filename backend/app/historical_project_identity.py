@@ -133,10 +133,17 @@ def _temporary_order_id(conn: Connection, project_id: int, order_no: str) -> int
             f"订单号 {order_no} 对应的临时项目已经包含其他订单或历史记录，不能自动归入正式项目"
         )
     order_id = int(orders[0]["id"])
-    if conn.execute(
-        text("SELECT 1 FROM sales_order_number_history WHERE sales_order_id=:order_id LIMIT 1"),
-        {"order_id": order_id},
-    ).scalar():
+    history = [
+        str(value)
+        for value in conn.execute(
+            text(
+                "SELECT order_no FROM sales_order_number_history "
+                "WHERE sales_order_id=:order_id ORDER BY history_order"
+            ),
+            {"order_id": order_id},
+        ).scalars().all()
+    ]
+    if history and history != [order_no]:
         raise ValueError(f"订单号 {order_no} 已有改号历史，不能自动归入正式项目")
     if conn.execute(
         text("SELECT 1 FROM project_manager_history WHERE project_id=:project_id LIMIT 1"),

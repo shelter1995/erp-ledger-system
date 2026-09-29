@@ -59,7 +59,6 @@ def enrich_history(conn, rows):
             r['order_number_history'] = numbers[r['sales_order_id']] or [r['order_no']]
             if r['order_line_id'] in source_lines:
                 r['manager_history'] = [r['account_manager']] if r.get('account_manager') else []
-                r['order_number_history'] = [r['order_no']]
     return items
 
 

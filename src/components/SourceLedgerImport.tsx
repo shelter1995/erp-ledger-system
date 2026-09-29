@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Upload } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { validatePreviewFile } from '../lib/legacyImportPreview';
 import { ImportIssue, issueCsv } from '../lib/importReport';
@@ -64,9 +65,17 @@ export default function SourceLedgerImport({ onClose, onImported, onHistory, onD
       <div className="overflow-y-auto p-5 space-y-5">
         {tab==='history' ? <ImportBatchHistory onImported={onImported} onBusy={setHistoryBusy} /> : <>
           <ol aria-label="导入步骤" className="grid grid-cols-3 gap-2 text-sm">{['选择文件','预览核对','导入完成'].map((label,i) => <li key={label} aria-current={step===i?'step':undefined} className={`rounded-lg px-3 py-2 ${step===i?'bg-blue-50 font-semibold text-blue-700':'bg-slate-50 text-slate-500'}`}>{i+1}. {label}</li>)}</ol>
-          {step===0 && <section className="rounded-xl border border-dashed border-blue-300 bg-blue-50/30 p-5 space-y-3">
-            <label className="block font-semibold text-sm">选择业务台账文件<input className="mt-3 block max-w-full text-sm" type="file" accept=".xlsx" disabled={locked || uncertain} onChange={e => {const selected=e.target.files?.[0];if(!selected)return;const invalid=validatePreviewFile(selected);setError(invalid||'');setErrors([]);setFile(invalid?null:selected);setResult(null);setKeepDuplicates(false);}} /></label>
-            <p className="text-sm text-slate-500">自动识别新版和原版台账，支持 .xlsx，最大 20 MB。</p>
+          {step===0 && <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+            <label htmlFor="source-ledger-file" className={`group flex min-h-28 items-center gap-4 rounded-xl border-2 border-dashed bg-white p-5 transition-colors focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2 ${locked || uncertain ? 'cursor-not-allowed border-slate-200 opacity-60' : 'cursor-pointer border-blue-300 hover:border-blue-500 hover:bg-blue-50/50'}`}>
+              <input id="source-ledger-file" aria-describedby="source-ledger-file-help" className="sr-only" type="file" accept=".xlsx" disabled={locked || uncertain} onChange={e => {const selected=e.target.files?.[0];if(!selected)return;const invalid=validatePreviewFile(selected);setError(invalid||'');setErrors([]);setFile(invalid?null:selected);setResult(null);setKeepDuplicates(false);}} />
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700 transition-colors group-hover:bg-blue-100"><Upload className="h-5 w-5" /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-slate-900">点击此区域选择业务台账文件</span>
+                <span className="mt-1 block truncate text-xs text-slate-500">{file ? '已选择文件，可再次点击更换' : '尚未选择文件'}</span>
+              </span>
+              <span className="shrink-0 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700">.XLSX</span>
+            </label>
+            <p id="source-ledger-file-help" className="text-sm text-slate-500">自动识别新版和原版台账，支持 .xlsx，最大 20 MB。</p>
             <p className="text-xs text-slate-500">保留各行编号、经理和归属。金额不擅自分摊，提交前自动备份，任何一行失败都不写入本批数据。</p>
           </section>}
           {file && <p className="break-all text-sm text-slate-600">文件：{file.name}{result?.layout && ` · 已识别：${result.layout}`}</p>}

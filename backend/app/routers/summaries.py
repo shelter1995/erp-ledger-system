@@ -6,13 +6,31 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from openpyxl import Workbook
 from ..department_service import department_filter
 from sqlalchemy import text
-from ..auth import CurrentUser, get_current_user, apply_department_scope
+from ..auth import CurrentUser, get_current_user, apply_department_scope, has_permission
 from ..db import db
 from ..validation import BusinessDate
 from ..ledger_excel import content_disposition
 from ..history_queries import order_match, manager_match
 
 router = APIRouter(tags=['summaries'])
+
+
+@router.get('/api/data/latest-modified')
+def latest_modified(user: CurrentUser = Depends(get_current_user)):
+    # Shared header metadata is available only within the user's business scope.
+    from ..authorization import READ_PERMISSIONS
+    from ..serializers import clean_value
+    from datetime import datetime
+    if not any(has_permission(user.role_code, permission, user.permissions) for permission in READ_PERMISSIONS):
+        return {'latestModifiedAt': ''}
+    conditions, params = ['1=1'], {}
+    apply_department_scope(conditions, params, user, 'f.department')
+    with db() as conn:
+        value = conn.execute(text('SELECT MAX(f.last_modified_at) FROM v_order_line_finance f WHERE ' + ' AND '.join(conditions)), params).scalar()
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    return {'latestModifiedAt': clean_value(value) if value else ''}
+
 AMOUNTS = ('order_value', 'purchase_amount', 'gross_profit', 'total_received', 'total_paid', 'accounts_receivable',
            'delivery_accounts_receivable', 'invoice_accounts_receivable', 'accounts_payable', 'delivery_value', 'delivery_cost', 'sales_invoice_amount', 'gross_profit_no_tax', 'labor_cost', 'other_cost', 'total_finance_paid', 'financial_accounts_payable', 'total_finance_checked')
 

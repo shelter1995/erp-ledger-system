@@ -1,6 +1,29 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+.date-input-empty::-webkit-datetime-edit { color: transparent; }
+.date-input-empty:focus::-webkit-datetime-edit { color: inherit; }
+.date-input-empty:focus + span { display: none; }
+
+/* Query fields share a 16px heading, 6px gap and 34px control. Inline
+   labels otherwise introduce different line boxes from the manager flex row. */
+.query-filter-grid > :not(fieldset) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.query-filter-grid > * > * { margin-block: 0; }
+.query-filter-grid > * > :first-child {
+  min-height: 16px;
+  font-size: 12px;
+  line-height: 16px;
+}
+.query-filter-grid > * > label,
+.query-filter-grid > label > span { display: block; }
+.query-filter-grid input:not([type=checkbox]),
+.query-filter-grid select { height: 34px; box-sizing: border-box; }
+.query-filter-grid > fieldset > legend { margin-bottom: 6px; }
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;

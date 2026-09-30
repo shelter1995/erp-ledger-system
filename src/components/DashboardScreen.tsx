@@ -1,3 +1,4 @@
+import DateInput from './DateInput';
 import { accountApi, AggregateData, Department } from '../api';
 import React, { useState, useEffect } from 'react';
 import {
@@ -16,7 +17,6 @@ import {
 import { OperationLog, OrderRecord, ProjectLedger, ScreenType } from '../types';
 import {
   getDashboardDepartments,
-  getDashboardLatestModifiedAt,
   getDashboardMetrics,
   getDashboardSalesRanking,
   getDashboardTrendData,
@@ -64,7 +64,7 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
   const [aggregate,setAggregate]=useState<Omit<AggregateData,'items'>|null>(null);
   const [departments,setDepartments]=useState<Department[]>([]);
   const [loadError,setLoadError]=useState('');
-  useEffect(()=>{if(!serverMode)return;let active=true;setLoadError('');accountApi.dashboard({department:selectedDepartment,start_date:startDate,end_date:endDate}).then(r=>{if(active)setAggregate(r);}).catch(e=>{if(active)setLoadError(e.message);});return()=>{active=false;};},[serverMode,selectedDepartment,startDate,endDate]);
+  useEffect(()=>{if(!serverMode)return;let active=true;setAggregate(null);setLoadError('');accountApi.dashboard({department:selectedDepartment,start_date:startDate,end_date:endDate}).then(r=>{if(active)setAggregate(r);}).catch(e=>{if(active)setLoadError(e.message);});return()=>{active=false;};},[serverMode,selectedDepartment,startDate,endDate]);
   useEffect(()=>{if(serverMode)accountApi.departments().then(r=>setDepartments(r.items)).catch(e=>setLoadError(e.message));},[serverMode]);
   const departmentOptions = serverMode ? departments.filter(d=>d.is_active).map(d=>d.name) : getDashboardDepartments(orders);
   const dashboardFilters = { department: selectedDepartment, startDate, endDate };
@@ -73,7 +73,6 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
   const salesRankingTitle = selectedDepartment ? '三级团队销售订单金额排行' : '部门销售订单金额排行';
   const recentLogs = logs.slice(0, 5);
   const trendData = (serverMode ? aggregate?.trends : null) || getDashboardTrendData(orders, dashboardFilters);
-  const latestModifiedAt = (serverMode ? aggregate?.latestModifiedAt : null) || getDashboardLatestModifiedAt(orders, dashboardFilters);
   const maxTrendValue = Math.max(...trendData.flatMap((item) => [approximateMoney(item.orderAmount), approximateMoney(item.profit)]), 1);
   const toPoint = (value: MoneyValue, index: number): TrendPoint => ({
     x: trendData.length === 1 ? 300 : (index / (trendData.length - 1)) * 600,
@@ -129,12 +128,12 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">仪表盘概览</h1>{loadError&&<p role="alert" className="text-red-700">{loadError}</p>}
           <p className="text-sm text-slate-500 font-sans mt-1">欢迎回来，这是今天的业务实时动态。</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3 self-start sm:self-center">
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
           <label className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm text-xs">
             <Filter className="w-4 h-4 text-blue-600" />
             <span className="font-medium text-slate-500">部门</span>
@@ -152,32 +151,28 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
               ))}
             </select>
           </label>
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm text-xs">
-            <Calendar className="w-4 h-4 text-slate-400" />
-            <span className="font-medium text-slate-500">销售订单日期</span>
-            <input
+          <div className="dashboard-date-filter grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:flex items-center gap-2 w-full sm:w-auto px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm text-xs">
+            <span className="col-span-3 inline-flex items-center gap-2 shrink-0 whitespace-nowrap"><Calendar className="w-4 h-4 text-slate-400" />
+            <span className="font-medium text-slate-500">销售订单日期</span></span>
+            <DateInput
               type="date"
               value={startDate}
               onChange={(event) => setStartDate(event.target.value)}
               max={endDate || undefined}
-              className="w-[116px] bg-transparent outline-none text-slate-800 font-medium cursor-pointer"
+              className="w-full min-w-0 sm:w-[116px] bg-transparent outline-none text-slate-800 font-medium cursor-pointer"
               aria-label="销售订单日期开始日期"
             />
             <span className="text-slate-400">至</span>
-            <input
+            <DateInput
               type="date"
               value={endDate}
               onChange={(event) => setEndDate(event.target.value)}
               min={startDate || undefined}
-              className="w-[116px] bg-transparent outline-none text-slate-800 font-medium cursor-pointer"
+              className="w-full min-w-0 sm:w-[116px] bg-transparent outline-none text-slate-800 font-medium cursor-pointer"
               aria-label="销售订单日期结束日期"
             />
           </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm text-xs font-mono" title="当前筛选结果中的数据最新修改时间">
-            <Calendar className="w-4 h-4 text-slate-400" />
-            <span className="font-sans font-medium text-slate-500">数据最新修改（北京时间）</span>
-            <span>{latestModifiedAt || '--'}</span>
-          </div>
+
         </div>
       </div>
 

@@ -1,3 +1,6 @@
+import ManagerFilter from './ManagerFilter';
+import DateInput from './DateInput';
+import { formatQuantity } from '../lib/quantity';
 import { PageSizeSelect } from './ManagementUI';
 import HistoryChange from './HistoryChange';
 import React, { useState, useMemo, useRef } from 'react';
@@ -27,7 +30,7 @@ import {
   ORDER_DETAIL_TABLE_WIDTHS,
 } from '../lib/orderDetailTables';
 import { calculateTaxAmounts, editableNumber } from '../lib/orderAmounts';
-import { applyOrderFilters, emptyOrderFilters, submitQueryFilters } from '../lib/queryFilterModel';
+import { applyOrderFilters, emptyOrderFilters, getDepartmentOptions, submitQueryFilters } from '../lib/queryFilterModel';
 import { formatMoney as formatExactMoney, type MoneyValue } from '../lib/money';
 
 interface OrderPurchaseEntry {
@@ -57,6 +60,8 @@ interface OrderDeliveryEntry {
 }
 
 interface OrdersScreenProps {
+  loading?: boolean;
+  loadError?: boolean;
   orders: OrderRecord[];
   onAddOrder: (order: OrderRecord) => Promise<void>;
   onImportExcel: (file: File) => Promise<{ batch_id: number; source_sha256: string; success_rows: number; skipped_rows: number }>;
@@ -95,15 +100,18 @@ function createDeleteVerificationCode() {
   return Array.from(randomValues, (value) => deleteVerificationAlphabet[value % deleteVerificationAlphabet.length]).join('');
 }
 
-export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpdateOrder, onDeleteOrder, onBatchSaved, canEnterOrders, canEditOrders, canDeleteOrders, canImportLedger }: OrdersScreenProps) {
+export default function OrdersScreen({ loading = false, loadError = false, orders, onAddOrder, onImportExcel, onUpdateOrder, onDeleteOrder, onBatchSaved, canEnterOrders, canEditOrders, canDeleteOrders, canImportLedger }: OrdersScreenProps) {
   const [importBusy,setImportBusy] = useState(false);
   const importWorking = useRef(false);
   const [importResult,setImportResult] = useState<{message: string; issues: ImportIssue[]} | null>(null);
   const [importDigest,setImportDigest] = useState('');
   // Query Filters State
+  const [manager, setManager] = useState('');
+  const [includeHistoryManager, setIncludeHistoryManager] = useState('');
+  const [department, setDepartment] = useState('');
+  const departmentOptions = useMemo(() => getDepartmentOptions(orders), [orders]);
   const [projectId, setProjectId] = useState('');
   const [orderId, setOrderId] = useState('');
-  const [orderDate, setOrderDate] = useState('');
   const [businessType, setBusinessType] = useState('');
   const [clientUnit, setClientUnit] = useState('');
   const [supplierName, setSupplierName] = useState('');
@@ -187,9 +195,11 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
   // Reset Filters
   const handleReset = () => {
+    setManager('');
+    setIncludeHistoryManager('');
+    setDepartment('');
     setProjectId('');
     setOrderId('');
-    setOrderDate('');
     setBusinessType('');
     setClientUnit('');
     setSupplierName('');
@@ -202,9 +212,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
   const handleSearch = () => {
     setSubmittedFilters(
       submitQueryFilters({
+        manager,
+        includeHistoryManager,
+        department,
         projectId,
         orderId,
-        orderDate,
+        orderDate: '',
         businessType,
         clientUnit,
         supplierName,
@@ -928,7 +941,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
       {/* Filter / Query Bar */}
       <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4 overflow-x-auto">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end min-w-0">
+        <div className="query-filter-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end min-w-0">
           {/* Project ID */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-500">项目编号</label>
@@ -953,18 +966,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             />
           </div>
 
-          {/* Order Date */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-500">销售订单日期</label>
-            <input 
-              type="date" 
-              lang="zh-CN"
-              value={orderDate}
-              onChange={e => setOrderDate(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
-            />
-          </div>
-
+          <ManagerFilter value={manager} includeHistory={includeHistoryManager} onChange={setManager} onHistoryChange={setIncludeHistoryManager} />
+          <label className="space-y-1.5 text-xs font-medium text-slate-500"><span>部门</span>
+            <select className="block w-full px-3 py-2 border border-slate-200 rounded-lg text-xs text-slate-700" value={department} onChange={e => setDepartment(e.target.value)}>
+              <option value="">全部部门</option>{departmentOptions.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
           {/* Business Type */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-500">业务类型</label>
@@ -982,7 +989,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             <label className="text-xs font-medium text-slate-500">客户单位名称</label>
             <input 
               type="text" 
-              placeholder="输入客户名称"
+              placeholder="输入客户单位名称"
               value={clientUnit}
               onChange={e => setClientUnit(e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
@@ -993,7 +1000,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             <label className="text-xs font-medium text-slate-500">采购厂商</label>
             <input
               type="text"
-              placeholder="输入采购厂商"
+              placeholder="输入采购厂商名称"
               value={supplierName}
               onChange={e => setSupplierName(e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
@@ -1004,7 +1011,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
           <div className="md:col-span-2 space-y-1.5">
             <label className="text-xs font-medium text-slate-500">销售订单日期范围</label>
             <div className="flex items-center gap-2">
-              <input 
+              <DateInput
                 type="date" 
                 lang="zh-CN"
                 value={startDate}
@@ -1012,7 +1019,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                 className="w-full px-3 py-1.5 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
               />
               <span className="text-slate-400 text-xs">至</span>
-              <input 
+              <DateInput
                 type="date" 
                 lang="zh-CN"
                 value={endDate}
@@ -1076,7 +1083,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
               {paginatedOrders.length === 0 ? (
                 <tr>
                   <td colSpan={13} className="px-6 py-10 text-center text-slate-400 text-sm">
-                    暂无符合条件的订单记录
+                    {loading ? '正在加载订单清单…' : loadError ? '清单加载失败，请点击上方重新加载' : '暂无符合条件的订单记录'}
                   </td>
                 </tr>
               ) : (
@@ -1099,11 +1106,11 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                     <td className="px-6 py-4 text-xs font-medium text-slate-900 truncate" title={item.projectName || '-'}>{item.projectName || '-'}</td>
                     <td className="px-6 py-4 text-xs text-slate-600 font-mono">{item.orderDate}</td>
                     <td className="px-6 py-4 text-xs font-medium text-slate-900 truncate" title={item.goodsName}>{item.goodsName}</td>
-                    <td className="px-6 py-4 text-xs text-center text-slate-700 font-sans">{item.quantity}</td>
+                    <td className="px-6 py-4 text-xs text-center text-slate-700 font-sans">{formatQuantity(item.quantity)}</td>
                     <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">
                       ¥{formatMoney(item.orderValue)}
                     </td>
-                    <td className="px-6 py-4 text-xs text-center font-mono font-semibold text-slate-800">{item.deliveredQty}</td>
+                    <td className="px-6 py-4 text-xs text-center font-mono font-semibold text-slate-800">{formatQuantity(item.deliveredQty)}</td>
                     <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">¥{formatMoney(item.deliveryValue || 0)}</td>
                     <td className="px-6 py-4 text-center">
                       <div className="inline-flex items-center justify-center gap-1">
@@ -1359,7 +1366,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                     ['物资/服务名称', selectedOrder.goodsName],
                     ['规格型号', selectedOrder.specModel || ''],
                     ['单位', selectedOrder.unitName || selectedOrder.quantity.replace(/^[\d.]+\s*/, '') || ''],
-                    ['数量', selectedOrder.quantity],
+                    ['数量', formatQuantity(selectedOrder.quantity)],
                     ['销售税率', selectedOrder.salesTaxRate === undefined ? '' : `${selectedOrder.salesTaxRate}%`],
                     ['不含税销售单价', formatOptionalMoney(selectedOrder.netUnitPrice)],
                     ['销售单价', formatOptionalMoney(selectedOrder.unitPrice)],
@@ -1473,12 +1480,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                         selectedDeliveries.map((item) => (
                           <tr key={item.id} className="text-xs text-slate-700">
                             <td className="px-4 py-2 whitespace-nowrap">{item.deliveryDate}</td>
-                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{blank(item.deliveredQty)}</td>
+                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatQuantity(item.deliveredQty)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveredNetRevenue)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveryValue)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveredNetCost)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveryCost)}</td>
-                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{blank(item.pendingQty)}</td>
+                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatQuantity(item.pendingQty)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.pendingNetAmount)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.pendingAmount)}</td>
                             {canManageOrderRows && (
@@ -1606,7 +1613,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-600">交付日期</label>
-                  <input type="date" lang="zh-CN" value={newDelivery.deliveryDate} onChange={e => setNewDelivery({...newDelivery, deliveryDate: e.target.value})} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500" />
+                  <DateInput type="date" lang="zh-CN" value={newDelivery.deliveryDate} onChange={e => setNewDelivery({...newDelivery, deliveryDate: e.target.value})} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500" />
                 </div>
                 {[
                   ['交付数量', 'deliveredQty'],
@@ -1732,7 +1739,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                 {/* Order Date */}
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-600">销售订单日期 *</label>
-                  <input 
+                  <DateInput
                     type="date" 
                     lang="zh-CN"
                     required

@@ -1,3 +1,4 @@
+import DateInput from './DateInput';
 import { useEffect, useRef, useState } from 'react';
 import { api, editingApi, combineEditContexts, HistoryContext } from '../api';
 import type { OrderRecord } from '../types';
@@ -56,7 +57,7 @@ export default function HistoryChange({ orders, mode, onClose, onSaved }: {
         : context ? <><p className="text-sm text-slate-600">框架 {context.current.project_code} 下的全部 {context.affected_lines} 条明细一起交接。</p>
           <p className="text-sm">负责人历史：{context.managers.map(m=>m.manager_name).join(' → ') || context.current.account_manager || '—'}</p>
           {([['客户经理',manager,setManager],['部门',department,setDepartment],['分公司',branch,setBranch],['三级团队',team,setTeam]] as const).map(([label,value,set])=><label className="block text-sm" key={label}>{label}<input className={input} value={value} required={label==='客户经理'||label==='部门'} maxLength={64} disabled={busy||done} onChange={e=>set(e.target.value)} /></label>)}
-          <label className="block text-sm">生效日期（未知可留空）<input type="date" max="2099-12-31" className={input} value={date} disabled={busy||done} onChange={e=>setDate(e.target.value)} /></label>
+          <label className="block text-sm">生效日期（未知可留空）<DateInput type="date" max="2099-12-31" className={input} value={date} disabled={busy||done} onChange={e=>setDate(e.target.value)} /></label>
         </> : <p>正在读取框架归属…</p>}
       <label className="block text-sm">变更原因<textarea className={input} required maxLength={500} value={reason} disabled={busy||done} onChange={e=>setReason(e.target.value)} /></label>
       {error && <p role="alert" className="text-red-700 text-sm">{error}</p>}

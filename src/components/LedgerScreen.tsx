@@ -1,3 +1,4 @@
+import DateInput from './DateInput';
 import { PageSizeSelect } from './ManagementUI';
 import { api } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
@@ -337,7 +338,7 @@ export default function LedgerScreen({
 
           {/* Account Manager */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-500">客户经理</label>
+            <div className="flex flex-wrap items-center justify-between gap-2"><label className="text-xs font-medium text-slate-500">项目经理</label><label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={includeHistoryManager === 'true'} onChange={e => setIncludeHistoryManager(e.target.checked ? 'true' : '')} />包含历史负责人</label></div>
             <input 
               type="text" 
               placeholder="输入经理姓名"
@@ -347,7 +348,7 @@ export default function LedgerScreen({
             />
           </div>
 
-          <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={includeHistoryManager === 'true'} onChange={e => setIncludeHistoryManager(e.target.checked ? 'true' : '')} />包含历史负责人</label>
+
 
           {/* Client Unit */}
           <div className="space-y-1.5">
@@ -404,7 +405,7 @@ export default function LedgerScreen({
           <div className="md:col-span-2 space-y-1.5">
             <label className="text-xs font-medium text-slate-500">销售订单日期</label>
             <div className="flex items-center gap-2">
-              <input 
+              <DateInput
                 type="date" 
                 lang="zh-CN"
                 max="2099-12-31"
@@ -413,7 +414,7 @@ export default function LedgerScreen({
                 className="w-full px-3 py-1.5 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
               />
               <span className="text-slate-400 text-xs">至</span>
-              <input 
+              <DateInput
                 type="date" 
                 lang="zh-CN"
                 max="2099-12-31"
@@ -427,7 +428,7 @@ export default function LedgerScreen({
           <div className="md:col-span-2 space-y-1.5">
             <label className="text-xs font-medium text-slate-500">开票日期</label>
             <div className="flex items-center gap-2">
-              <input
+              <DateInput
                 type="date"
                 lang="zh-CN"
                 max="2099-12-31"
@@ -436,7 +437,7 @@ export default function LedgerScreen({
                 className="w-full px-3 py-1.5 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
               />
               <span className="text-slate-400 text-xs">至</span>
-              <input
+              <DateInput
                 type="date"
                 lang="zh-CN"
                 max="2099-12-31"

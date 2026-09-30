@@ -723,6 +723,7 @@ export interface AggregateData {
   latestModifiedAt: string;
 }
 export const accountApi = {
+  latestModified: () => request<{latestModifiedAt: string}>('/data/latest-modified'),
   saveProfile: (display_name:string,avatar_data:string|null) => request<{user:BackendAuthUser}>('/auth/profile',{method:'PUT',body:JSON.stringify({display_name,avatar_data})}),
   logs: (offset:number,limit=20) => request<PageResult<BackendOperationLog>>('/logs'+query({offset,limit})),
   backups: (offset:number,limit=20) => request<PageResult<BackendBackupInfo>>('/backups'+query({offset,limit})),

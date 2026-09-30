@@ -19,6 +19,9 @@ export type LedgerFilters = {
 };
 
 export type OrderFilters = {
+  manager?: string;
+  includeHistoryManager?: string;
+  department?: string;
   projectId: string;
   orderId: string;
   orderDate: string;
@@ -68,6 +71,9 @@ export const emptyLedgerFilters: LedgerFilters = {
 };
 
 export const emptyOrderFilters: OrderFilters = {
+  manager: '',
+  includeHistoryManager: '',
+  department: '',
   projectId: '',
   orderId: '',
   orderDate: '',
@@ -185,6 +191,8 @@ export function applyLedgerFilters(
 
 export function applyOrderFilters(orders: OrderRecord[], filters: OrderFilters) {
   return orders.filter((item) => {
+    if (filters.manager && !matchesManager(item, filters.manager, filters.includeHistoryManager)) return false;
+    if (filters.department && item.department !== filters.department) return false;
     if (filters.projectId && !item.projectId.toLowerCase().includes(filters.projectId.toLowerCase())) return false;
     if (filters.orderId && !matchesOrder(item, filters.orderId)) return false;
     if (filters.orderDate && item.orderDate !== filters.orderDate) return false;

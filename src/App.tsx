@@ -38,7 +38,7 @@ import {
   formatOperationLogChangeGroups,
   formatOperationLogDetails,
 } from './lib/operationLogDisplay';
-import { formatDatabaseUtcTime } from './lib/dateTime';
+import { formatDatabaseUtcTime, formatBeijingDataTime } from './lib/dateTime';
 import { loadAllPages } from './lib/loadAllPages';
 import { rawAmount, optionalAmount } from './lib/money';
 
@@ -241,8 +241,10 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState('');
-  const [lastUpdated, setLastUpdated] = useState('');
+  const [dataLatestModified, setDataLatestModified] = useState('');
   const [error, setError] = useState('');
+  const [dataLoading, setDataLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState('');
 
   const clearSession = () => {
     loadVersion.current += 1;
@@ -258,12 +260,16 @@ export default function App() {
     setSales([]);
     setLogs([]);
     setBackups([]);
-    setLastUpdated('');
+    setDataLatestModified('');
   };
 
   async function loadBackendData(user = currentUser) {
     if (!user || user.mustChangePassword) return;
     const ticket = ++loadVersion.current;
+    const isCurrent = () => ticket === loadVersion.current;
+    setDataLoading(true);
+    setLoadProgress('正在加载清单…');
+    setDataLatestModified('');
     setError('');
     try {
       if (currentScreen === 'dashboard' && hasPermission(user,'logs_view')) {
@@ -271,20 +277,42 @@ export default function App() {
         if(ticket!==loadVersion.current)return;
         setLogs(data.items.map(mapLog));
       } else if (currentScreen === 'orders' && canOpenPage(user,'orders')) {
-        const data=await loadAllPages(api.orders);
-        if(ticket!==loadVersion.current)return;
-        setOrders(data.items.map(mapOrder));
+        await loadAllPages(api.orders, page => {
+          setOrders(page.items.map(mapOrder));
+          setLoadProgress(`基本信息已加载 ${page.items.length} / ${page.total} 条，正在完成加载…`);
+        }, isCurrent);
       } else if (currentScreen === 'purchases' && canOpenPage(user,'purchases')) {
-        const [data, options] = await Promise.all([loadAllPages(api.purchases), accountApi.orderOptions('purchases')]);
-        if(ticket!==loadVersion.current)return;
-        setPurchases(data.items.map(mapPurchase)); setOrders(options.items.map(mapOrder));
+        const results = await Promise.allSettled([
+          loadAllPages(api.purchases, page => {
+            setPurchases(page.items.map(mapPurchase));
+            setLoadProgress(`采购信息已加载 ${page.items.length} / ${page.total} 条，正在完成加载…`);
+          }, isCurrent),
+          accountApi.orderOptions('purchases').then(options => { if (isCurrent()) setOrders(options.items.map(mapOrder)); }),
+        ]);
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
       } else if (currentScreen === 'sales' && canOpenPage(user,'sales')) {
-        const [data, options] = await Promise.all([loadAllPages(api.sales), accountApi.orderOptions('sales')]);
-        if(ticket!==loadVersion.current)return;
-        setSales(data.items.map(mapSale)); setOrders(options.items.map(mapOrder));
+        const results = await Promise.allSettled([
+          loadAllPages(api.sales, page => {
+            setSales(page.items.map(mapSale));
+            setLoadProgress(`销售信息已加载 ${page.items.length} / ${page.total} 条，正在完成加载…`);
+          }, isCurrent),
+          accountApi.orderOptions('sales').then(options => { if (isCurrent()) setOrders(options.items.map(mapOrder)); }),
+        ]);
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
       }
-      setLastUpdated(new Date().toLocaleTimeString('zh-CN', {hour12:false}));
-    } catch (err) { if(ticket===loadVersion.current)setError(err instanceof Error ? err.message : '数据加载失败'); }
+      if (!isCurrent()) return;
+    } catch (err) { if(isCurrent())setError(`清单未能完整加载：${err instanceof Error ? err.message : '数据加载失败'}。已显示的数据可能不完整，请重试。`); }
+    finally {
+      if (isCurrent()) {
+        setDataLoading(false);
+        // Header metadata must not delay or fail the business list request.
+        void accountApi.latestModified()
+          .then(data => { if (isCurrent()) setDataLatestModified(formatBeijingDataTime(data.latestModifiedAt)); })
+          .catch(() => { if (isCurrent()) setDataLatestModified(''); });
+      }
+    }
   }
 
   useEffect(() => {
@@ -617,7 +645,10 @@ export default function App() {
               <span className="max-w-[88px] sm:max-w-[128px] truncate">{currentUser.username}</span>
               <span className="hidden xl:inline text-xs font-medium text-slate-400">{currentUser.displayName}</span>
             </div>
-            <span className="text-slate-500 font-mono hidden sm:inline">最后更新: {lastUpdated || '--:--:--'}</span>
+            {<div title="当前账号可见业务数据的最新修改时间（北京时间），不受页面筛选影响" className="min-w-0 text-slate-500 leading-tight">
+              <span className="block sm:inline whitespace-nowrap">数据最新修改 </span>
+              <span className="block sm:inline font-mono whitespace-nowrap">{dataLatestModified || '--'}</span>
+            </div>}
             <button
               type="button"
               onClick={handleLogout}
@@ -632,15 +663,18 @@ export default function App() {
         <main className="flex-1 min-w-0 p-3 sm:p-6 space-y-6 mt-14 overflow-y-auto overflow-x-hidden w-full max-w-[1600px] mx-auto bg-[#F3F4F6]">
           {error && (
             <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-sm font-medium">
-              {error}
+              {error} <button type="button" className="underline ml-2" onClick={() => void loadBackendData()}>重新加载</button>
             </div>
           )}
+          {dataLoading && ['orders', 'sales', 'purchases'].includes(currentScreen) && <p role="status" className="text-sm text-blue-700">{loadProgress} 加载完成前，筛选与汇总仅包含已加载记录。</p>}
           {currentScreen === 'dashboard' && canOpenPage(currentUser,'dashboard') && (
             <DashboardScreen logs={logs} ledgers={[]} orders={[]} onNavigate={navigateFromSidebar} serverMode showLogs={hasPermission(currentUser,'logs_view')} />
           )}
           {currentScreen === 'ledger' && canOpenPage(currentUser,'ledger') && <SummaryLedgerScreen user={currentUser} onNavigate={navigateFromSidebar}/>}
           {currentScreen === 'orders' && canOpenPage(currentUser,'orders') && (
             <OrdersScreen
+              loading={dataLoading}
+              loadError={Boolean(error)}
               orders={orders}
               onAddOrder={handleAddOrder}
               onImportExcel={handleImportExcel}
@@ -653,8 +687,8 @@ export default function App() {
               canImportLedger={canImportLedger}
             />
           )}
-          {currentScreen === 'purchases' && canOpenPage(currentUser,'purchases') && <PurchasesScreen purchases={purchases} orders={orders} canEnterPurchases={canEnterPurchases} canEditPurchases={canEditPurchases} canDeletePurchases={canDeletePurchases} onRefresh={loadBackendData} />}
-          {currentScreen === 'sales' && canOpenPage(currentUser,'sales') && <SalesScreen sales={sales} orders={orders} canEnterSales={canEnterSales} canEditSales={canEditSales} canDeleteSales={canDeleteSales} onRefresh={loadBackendData} />}
+          {currentScreen === 'purchases' && canOpenPage(currentUser,'purchases') && <PurchasesScreen loading={dataLoading} loadError={Boolean(error)} purchases={purchases} orders={orders} canEnterPurchases={canEnterPurchases} canEditPurchases={canEditPurchases} canDeletePurchases={canDeletePurchases} onRefresh={loadBackendData} />}
+          {currentScreen === 'sales' && canOpenPage(currentUser,'sales') && <SalesScreen loading={dataLoading} loadError={Boolean(error)} sales={sales} orders={orders} canEnterSales={canEnterSales} canEditSales={canEditSales} canDeleteSales={canDeleteSales} onRefresh={loadBackendData} />}
           {currentScreen === 'maintenance' && canOpenPage(currentUser,'maintenance') && <MaintenanceScreen user={currentUser}/>}
           {currentScreen === 'accounts' && canOpenPage(currentUser,'accounts') && <AccountPermissionsScreen user={currentUser}/>}
           {currentScreen === 'logs' && canOpenPage(currentUser,'logs') && <LogsScreen/>}

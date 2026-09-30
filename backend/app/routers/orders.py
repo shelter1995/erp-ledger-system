@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ..order_year import OrderYear, apply_order_year
 
 import json
 from decimal import Decimal, ROUND_HALF_UP
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from starlette.concurrency import run_in_threadpool
 
 from ..audit import write_batch_operation_log, write_operation_log
@@ -153,6 +154,7 @@ MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 @router.get("")
 def list_orders(
+    order_year: OrderYear = None,
     project_id: str | None = None,
     order_id: str | None = None,
     business_type: str | None = None,
@@ -166,6 +168,7 @@ def list_orders(
 ) -> dict:
     conditions = ["1=1"]
     params: dict[str, object] = {"limit": limit, "offset": offset}
+    apply_order_year(conditions, params, order_year)
     if project_id:
         conditions.append("project_code LIKE :project_id")
         params["project_id"] = f"%{project_id}%"
@@ -380,7 +383,7 @@ def download_order_template(user: CurrentUser = Depends(get_current_user)) -> Re
 
 @router.get("/export")
 def export_orders(
-    project_id: str | None = Query(default=None, max_length=255),
+    order_year: OrderYear = None, project_id: str | None = Query(default=None, max_length=255),
     department: str | None = Query(default=None, max_length=255),
     manager: str | None = Query(default=None, max_length=255),
     include_history_manager: bool = False,
@@ -399,6 +402,7 @@ def export_orders(
     if invoice_start_date and invoice_end_date and invoice_start_date > invoice_end_date:
         raise HTTPException(status_code=400, detail="开票日期的开始日期不能晚于结束日期。")
     filters = {
+        "order_year": order_year,
         "project_id": project_id,
         "department": department,
         "manager": manager,
@@ -687,10 +691,10 @@ def create_basic_order_lines_batch(
     order_payloads = [_basic_order_update(item) for item in payload.items]
     for item in order_payloads:
         _validate_create_payload(item, user)
-    _validate_batch_create_targets(order_payloads)
     created_ids: list[int] = []
     try:
         with business_write() as conn:
+            _validate_batch_create_targets(order_payloads, conn)
             for item in order_payloads:
                 created_ids.append(_create_order_line(conn, item))
             write_operation_log(
@@ -840,7 +844,7 @@ def update_order_line(
                 WHERE id = :project_id
                 """
             ),
-            {"project_id": -1 if ids.get('source_preserved') else ids["project_id"], **project_data},
+            {"project_id": -1 if ids.get('source_preserved') or ids.get('ownership_overridden') else ids["project_id"], **project_data},
         )
         conn.execute(
             text(
@@ -972,8 +976,8 @@ def _ensure_order_line_in_conn(
     row = conn.execute(
         text(
             """
-            SELECT ol.id AS order_line_id, ol.sales_order_id, so.project_id, ol.source_preserved,
-                   CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
+            SELECT ol.id AS order_line_id, ol.sales_order_id, so.project_id, ol.source_preserved, so.ownership_overridden,
+                   CASE WHEN so.ownership_overridden=1 THEN so.department WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
             FROM order_line ol
             JOIN sales_order so ON so.id = ol.sales_order_id AND so.deleted_at IS NULL
             JOIN project p ON p.id = so.project_id AND p.deleted_at IS NULL
@@ -1058,7 +1062,7 @@ def _validate_batch_update_targets(
             if sales_order_id in shared_order_dates and shared_order_dates[sales_order_id] != data['order_date']:
                 raise HTTPException(status_code=422, detail="同一销售订单的订单级字段必须保持一致，请统一修改后再提交")
             shared_order_dates[sales_order_id] = data['order_date']
-        if ids.get('source_preserved'):
+        if ids.get('source_preserved') or ids.get('ownership_overridden'):
             project_id = -order_line_id
         if project_id in project_targets and project_targets[project_id] != project_target:
             raise HTTPException(status_code=422, detail="同一项目的项目级字段必须保持一致，请统一修改后再提交")
@@ -1113,10 +1117,15 @@ def _validate_batch_update_targets(
             seen.add(identity)
 
 
-def _validate_batch_create_targets(order_payloads: list[OrderUpdate]) -> None:
-    project_targets: dict[str, tuple[object, ...]] = {}
+def _validate_batch_create_targets(order_payloads: list[OrderUpdate], conn) -> None:
+    project_targets: dict[str | tuple[str, str], tuple[object, ...]] = {}
     order_targets: dict[tuple[str, str], tuple[object, ...]] = {}
     line_targets: set[tuple[str, str, str, str, str, Decimal, Decimal, str]] = set()
+    codes = list({p.project_code for p in order_payloads})
+    overridden = set(conn.execute(text('SELECT p.project_code, so.order_no FROM sales_order so '
+                                      'JOIN project p ON p.id=so.project_id '
+                                      'WHERE so.ownership_overridden=1 AND p.project_code IN :codes')
+                                  .bindparams(bindparam('codes', expanding=True)), {'codes':codes}).all())
 
     for payload in order_payloads:
         data = _calculated_payload_data(payload)
@@ -1134,6 +1143,7 @@ def _validate_batch_create_targets(order_payloads: list[OrderUpdate]) -> None:
             for key in ("amount_type", "order_date", "business_type", "statistical_category")
         )
         order_identity = (project_code, order_no)
+        project_key = order_identity if order_identity in overridden else project_code
         line_identity = (
             project_code,
             order_no,
@@ -1145,7 +1155,7 @@ def _validate_batch_create_targets(order_payloads: list[OrderUpdate]) -> None:
             str(data["supplier_name"] or "").strip(),
         )
 
-        if project_code in project_targets and project_targets[project_code] != project_target:
+        if project_key in project_targets and project_targets[project_key] != project_target:
             raise HTTPException(status_code=422, detail="同一项目的项目级字段必须保持一致，请统一修改后再提交")
         if order_identity in order_targets and order_targets[order_identity] != order_target:
             raise HTTPException(status_code=422, detail="同一销售订单的订单级字段必须保持一致，请统一修改后再提交")
@@ -1156,7 +1166,7 @@ def _validate_batch_create_targets(order_payloads: list[OrderUpdate]) -> None:
                 "（数量、单价或采购厂商不同视为不同明细）",
             )
 
-        project_targets[project_code] = project_target
+        project_targets[project_key] = project_target
         order_targets[order_identity] = order_target
         line_targets.add(line_identity)
 
@@ -1180,7 +1190,7 @@ def _update_basic_order_line_in_conn(
             """
         ),
         {
-            "project_id": -1 if ids.get('source_preserved') else ids["project_id"],
+            "project_id": -1 if ids.get('source_preserved') or ids.get('ownership_overridden') else ids["project_id"],
             "project_code": data["project_code"],
             "department": data["department"],
             "branch_company": data["branch_company"],
@@ -1283,18 +1293,21 @@ def _create_order_line(conn, payload: OrderUpdate) -> int:
         "team_level3_name": data["team_name"],
     }
     if project:
-        if actor and not can_access_department(actor, project['department'], True):
-            raise HTTPException(404, '框架不存在')
-        project_id = int(project["id"])
+        project_id = int(project['id'])
+        existing_order = conn.execute(text('SELECT * FROM sales_order WHERE project_id=:id AND order_no=:number AND deleted_at IS NULL'),
+                                      {'id':project_id,'number':data['order_no']}).mappings().first()
+        overridden = existing_order and existing_order['ownership_overridden']
+        owner = existing_order if overridden else project
+        if actor and not can_access_department(actor, owner['department'], True):
+            raise HTTPException(404, '订单或框架不存在')
         if not project.get('deleted_at'):
-            for key, value in project_values.items():
-                if (project[key] or '') != (value or ''):
-                    raise HTTPException(409, '框架归属不一致，请先通过框架整体交接确认')
-        assignments = ", ".join(f"{key} = :{key}" for key in project_values if key != "project_code")
-        conn.execute(
-            text(f"UPDATE project SET {assignments}, deleted_at = NULL WHERE id = :project_id"),
-            {"project_id": project_id, **project_values},
-        )
+            for key in ('department', 'branch_company', 'account_manager', 'team_level3_name'):
+                if (owner[key] or '') != (project_values[key] or ''):
+                    raise HTTPException(409, '归属不一致，请先通过订单或框架交接确认')
+        if not overridden:
+            assignments = ', '.join(f'{key} = :{key}' for key in project_values if key != 'project_code')
+            conn.execute(text(f'UPDATE project SET {assignments}, deleted_at=NULL WHERE id=:project_id'),
+                         {'project_id':project_id, **project_values})
     else:
         project_values["project_name"] = data["project_name"]
         result = conn.execute(
@@ -1553,7 +1566,7 @@ def _guard_identity_change(conn, ids, data):
         raise HTTPException(409, '请使用“变更订单号”操作；普通编辑不能改号')
     for key, field in [('account_manager','account_manager'),('department','department'),('branch_company','branch_company'),('team_name','team_level3_name')]:
         if (data.get(key) or '') != (current[field] or ''):
-            raise HTTPException(409, '请使用“框架整体交接”操作修改归属；普通编辑不能交接')
+            raise HTTPException(409, '请使用“当前订单交接”或“整个框架交接”修改归属；普通编辑不能交接')
 
 
 def _guard_shared_order_change(conn, sales_order_id, data, source_preserved):
@@ -1569,6 +1582,6 @@ def _guard_shared_order_change(conn, sales_order_id, data, source_preserved):
         keys.append(('order_date','order_date'))
     if all(str(data.get(k) or '')==str(current[c] or '') for k,c in keys):
         return
-    departments=conn.execute(text('SELECT CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id JOIN project p ON p.id=so.project_id WHERE so.id=:id AND ol.deleted_at IS NULL'),{'id':sales_order_id}).scalars()
+    departments=conn.execute(text('SELECT CASE WHEN so.ownership_overridden=1 THEN so.department WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END FROM order_line ol JOIN sales_order so ON so.id=ol.sales_order_id JOIN project p ON p.id=so.project_id WHERE so.id=:id AND ol.deleted_at IS NULL'),{'id':sales_order_id}).scalars()
     if any(not can_access_department(actor,d,True) for d in departments):
         raise HTTPException(404,'订单包含不可维护的明细，不能修改共享订单字段')

@@ -227,7 +227,7 @@ function valuesMatch(before: unknown, after: unknown) {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
-const permissionLabels: Record<string,string> = {dashboard_view:'仪表盘查看',ledger_view:'台账查看',maintenance_view:'数据维护页面',ledger_import:'台账批量导入',data_replace:'替换全部业务数据',department_transfer:'跨部门转移',accounts_view:'账号权限页面',accounts_create:'创建账号',accounts_update:'配置账号权限',accounts_disable:'启停账号',logs_view:'操作日志查看',backups_view:'备份恢复页面',backups_create:'创建备份',backups_verify:'校验备份',backups_restore:'恢复业务数据',system_admin:'旧版系统管理'};
+const permissionLabels: Record<string,string> = {dashboard_view:'仪表盘查看',ledger_view:'台账查看',maintenance_view:'数据维护页面',ledger_import:'台账批量导入',data_replace:'替换全部业务数据',department_transfer:'归属交接（当前订单 / 整个框架）',accounts_view:'账号权限页面',accounts_create:'创建账号',accounts_update:'配置账号权限',accounts_disable:'启停账号',logs_view:'操作日志查看',backups_view:'备份恢复页面',backups_create:'创建备份',backups_verify:'校验备份',backups_restore:'恢复业务数据',system_admin:'旧版系统管理'};
 for (const [prefix,label] of [['order','基本信息'],['sales','销售信息'],['purchase','采购信息']]) {
   for (const [action,text] of [['view','查看'],['entry','新增'],['edit','修改'],['delete','删除']]) permissionLabels[prefix+'_'+action]=label+text;
 }

@@ -36,7 +36,6 @@ def list_ledgers(
         conditions.append(department_filter("department"))
         params["department"] = department
     if manager:
-        conditions.append(manager_match() if include_history_manager else "account_manager LIKE :manager")
         params["manager"] = f"%{manager}%"
     if client_unit:
         conditions.append("customer_unit_name LIKE :client_unit")
@@ -60,6 +59,8 @@ def list_ledgers(
         scope.append(department_filter('finance.department'))
         conditions.remove(department_filter('department'))
 
+    if manager:
+        scope.append(manager_match('finance.order_line_id') if include_history_manager else 'finance.account_manager LIKE :manager')
     where_sql = " AND ".join(conditions)
     totals = {key:key for key in ('purchase_amount','labor_cost','other_cost','total_finance_paid',
               'financial_accounts_payable','total_received','accounts_receivable','delivery_accounts_receivable',

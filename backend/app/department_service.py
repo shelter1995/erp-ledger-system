@@ -24,6 +24,7 @@ def validate_name(conn, name, *, canonical=False):
 def validate_restore_departments(conn, tables):
     known = set(conn.execute(text('SELECT name FROM department_alias')).scalars())
     names = {r.get('department') for r in tables.get('project', [])} | {r.get('line_department') for r in tables.get('order_line', [])}
+    names |= {r.get('department') for r in tables.get('sales_order', []) if r.get('ownership_overridden')}
     missing = {str(n) for n in names if n} - known
     if missing:
         raise HTTPException(422, '备份包含未登记部门，请先核对目录：' + '、'.join(sorted(missing)))

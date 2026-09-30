@@ -93,7 +93,7 @@ def start_write(conn):
     if not ids:
         raise HTTPException(422,'缺少待修改的订单明细')
     projects=conn.execute(text('''SELECT DISTINCT p.id,p.project_code,
-      CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department FROM project p
+      CASE WHEN so.ownership_overridden=1 THEN so.department WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department FROM project p
       JOIN sales_order so ON so.project_id=p.id AND so.deleted_at IS NULL
       JOIN order_line ol ON ol.sales_order_id=so.id AND ol.deleted_at IS NULL
       WHERE p.deleted_at IS NULL AND ol.id IN :ids''').bindparams(bindparam('ids',expanding=True)),{'ids':ids}).mappings().all()

@@ -1,3 +1,8 @@
+import OrderYearFilter, { useOrderYear } from './OrderYearFilter';
+import { currentOrderYear } from '../lib/orderYear';
+import ManagerFilter from './ManagerFilter';
+import DateInput from './DateInput';
+import { formatQuantity } from '../lib/quantity';
 import { PageSizeSelect } from './ManagementUI';
 import { editingApi } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
@@ -25,6 +30,8 @@ import BatchSalesEditor from './BatchSalesEditor';
 import { compareMoney, decimalMoney, differenceMoney, formatMoney as formatExactMoney, sumMoney, type MoneyValue } from '../lib/money';
 
 interface SalesScreenProps {
+  loading?: boolean;
+  loadError?: boolean;
   sales: SalesRecord[];
   orders: OrderRecord[];
   canEnterSales: boolean;
@@ -46,7 +53,7 @@ function getPaginationItems(totalPages: number): Array<number | 'ellipsis'> {
 }
 
 function formatMoney(value?: MoneyValue | null) {
-  return `¥${formatExactMoney(value)}`;
+  return `${formatExactMoney(value)}`;
 }
 
 function textValue(value: unknown) {
@@ -62,7 +69,8 @@ function formatRatio(value?: MoneyValue | null) {
   return `${decimalMoney(value).toFixed(2)}%`;
 }
 
-export default function SalesScreen({ sales, orders, canEnterSales, canEditSales, canDeleteSales, onRefresh }: SalesScreenProps) {
+export default function SalesScreen({ loading = false, loadError = false, sales, orders, canEnterSales, canEditSales, canDeleteSales, onRefresh }: SalesScreenProps) {
+  const { setYear } = useOrderYear();
   const [projectId, setProjectId] = useState('');
   const [orderId, setOrderId] = useState('');
   const [manager, setManager] = useState('');
@@ -163,6 +171,7 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
   );
 
   const handleReset = () => {
+    setYear(currentOrderYear());
     setProjectId('');
     setOrderId('');
     setManager('');
@@ -421,33 +430,13 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
       </div>
 
       <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+        <div className="query-filter-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end">
+          <OrderYearFilter />
           <FilterInput label="项目编号" placeholder="输入项目编号" value={projectId} onChange={setProjectId} />
           <FilterInput label="销售订单号" placeholder="输入销售订单号" value={orderId} onChange={setOrderId} />
-          <FilterInput label="客户经理" placeholder="请输入客户经理姓名" value={manager} onChange={setManager} />
-          <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={includeHistoryManager === 'true'} onChange={e => setIncludeHistoryManager(e.target.checked ? 'true' : '')} />包含历史负责人</label>
-          <FilterInput label="采购厂商" placeholder="输入采购厂商" value={supplier} onChange={setSupplier} />
+          <ManagerFilter value={manager} includeHistory={includeHistoryManager} onChange={setManager} onHistoryChange={setIncludeHistoryManager} />
+          <FilterInput label="采购厂商" placeholder="输入采购厂商名称" value={supplier} onChange={setSupplier} />
           <FilterInput label="翔云合同号" placeholder="输入翔云合同号" value={contractNo} onChange={setContractNo} />
-          <div className="space-y-1.5 md:col-span-2">
-            <label className="text-xs font-medium text-slate-500">回款时间</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                lang="zh-CN"
-                value={receiptStartDate}
-                onChange={(e) => setReceiptStartDate(e.target.value)}
-                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
-              />
-              <span className="shrink-0 text-xs text-slate-400">至</span>
-              <input
-                type="date"
-                lang="zh-CN"
-                value={receiptEndDate}
-                onChange={(e) => setReceiptEndDate(e.target.value)}
-                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
-              />
-            </div>
-          </div>
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-500">部门</label>
             <select value={department} onChange={(e) => setDepartment(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white text-xs text-slate-700">
@@ -459,6 +448,27 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
               ))}
             </select>
           </div>
+          <div className="space-y-1.5 md:col-span-2 xl:col-start-1">
+            <label className="text-xs font-medium text-slate-500">回款时间范围</label>
+            <div className="flex items-center gap-2">
+              <DateInput
+                type="date"
+                lang="zh-CN"
+                value={receiptStartDate}
+                onChange={(e) => setReceiptStartDate(e.target.value)}
+                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
+              />
+              <span className="shrink-0 text-xs text-slate-400">至</span>
+              <DateInput
+                type="date"
+                lang="zh-CN"
+                value={receiptEndDate}
+                onChange={(e) => setReceiptEndDate(e.target.value)}
+                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
+              />
+            </div>
+          </div>
+
         </div>
 
         <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -507,7 +517,7 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
             <tbody className="divide-y divide-slate-100">
               {paginatedSales.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="px-6 py-10 text-center text-slate-400 text-sm">暂无符合条件的销售记录</td>
+                  <td colSpan={14} className="px-6 py-10 text-center text-slate-400 text-sm">{loading ? '正在加载销售清单…' : loadError ? '清单加载失败，请点击上方重新加载' : '暂无符合条件的销售记录'}</td>
                 </tr>
               ) : (
                 paginatedSales.map((item, index) => {
@@ -526,14 +536,14 @@ export default function SalesScreen({ sales, orders, canEnterSales, canEditSales
                       </td>
                       <td className="px-6 py-4 text-xs font-mono text-slate-500">{item.projectId}</td>
                       <td className="px-6 py-4 text-xs font-mono text-slate-500 truncate" title={item.orderId}>{item.orderId}</td>
-                      <td className="px-6 py-4 text-xs text-slate-700 font-medium">{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && <small className="block text-amber-700">历史：{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}</small>}</td>
+                      <td className="px-6 py-4 text-xs text-slate-700 font-normal">{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && <small className="block text-amber-700">历史：{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}</small>}</td>
                       <td className="px-6 py-4 text-xs text-slate-700 truncate" title={order?.userName || ''}>{order?.userName || '-'}</td>
                       <td className="px-6 py-4 text-xs text-slate-700 truncate" title={order?.projectName || ''}>{order?.projectName || '-'}</td>
                       <td className="px-6 py-4 text-xs text-slate-600 font-mono">{order?.orderDate || '-'}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">{formatMoney(item.contractValue)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-900">{formatMoney(item.contractValue)}</td>
                       <td className="px-6 py-4 text-xs text-right font-mono text-slate-700">{formatMoney(order?.deliveryValue)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-emerald-600 font-medium">{formatMoney(item.invoiceAmount)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-blue-600 font-medium">{formatMoney(item.totalReceived)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-emerald-600 font-normal">{formatMoney(item.invoiceAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-blue-600 font-normal">{formatMoney(item.totalReceived)}</td>
                       <td className="px-6 py-4 text-xs text-right font-mono text-rose-600">{formatMoney(item.deliveryAccountsReceivable)}</td>
                       <td className="px-6 py-4 text-xs text-right font-mono text-rose-600">{formatMoney(item.invoiceAccountsReceivable)}</td>
                       <td className="px-6 py-4 text-center">
@@ -815,7 +825,7 @@ function InfoSection({ title, items }: { title: string; items: Array<[string, un
         {items.map(([label, value]) => (
           <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
             <p className="text-[11px] text-slate-400">{label}</p>
-            <p className="mt-1 text-xs font-semibold text-slate-800 break-words">{textValue(value)}</p>
+            <p className="mt-1 text-xs font-semibold text-slate-800 break-words">{label.includes('数量') ? formatQuantity(value) : textValue(value)}</p>
           </div>
         ))}
       </div>
@@ -851,7 +861,7 @@ const RecordRow: React.FC<{ values: Array<[string, unknown]>; actions?: React.Re
       {values.map(([label, value]) => (
         <div key={label} className="min-w-0">
           <p className="text-[11px] text-slate-400">{label}</p>
-          <p className="mt-1 text-xs font-medium text-slate-700 whitespace-nowrap">{textValue(value)}</p>
+          <p className="mt-1 text-xs font-medium text-slate-700 whitespace-nowrap">{label.includes('数量') ? formatQuantity(value) : textValue(value)}</p>
         </div>
       ))}
       {actions && <div className="flex items-center justify-end gap-1">{actions}</div>}
@@ -887,10 +897,11 @@ function EntryButton({ icon, label, onClick }: { icon: React.ReactNode; label: s
 }
 
 function FormInput({ label, value, onChange, readOnly = false, type = 'text', className = '' }: { label: string; value: string; onChange?: (value: string) => void; readOnly?: boolean; type?: string; className?: string }) {
+  const Input = type === 'date' ? DateInput : 'input';
   return (
     <label className={`space-y-1 ${className}`}>
       <span className="block text-xs font-semibold text-slate-600">{label}</span>
-      <input type={type} lang={type === 'date' ? 'zh-CN' : undefined} value={value} readOnly={readOnly} aria-readonly={readOnly} onChange={(e) => onChange?.(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+      <Input type={type} lang={type === 'date' ? 'zh-CN' : undefined} value={value} readOnly={readOnly} aria-readonly={readOnly} onChange={(e) => onChange?.(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
     </label>
   );
 }

@@ -1,3 +1,8 @@
+import OrderYearFilter, { useOrderYear } from './OrderYearFilter';
+import { currentOrderYear } from '../lib/orderYear';
+import ManagerFilter from './ManagerFilter';
+import DateInput from './DateInput';
+import { formatQuantity } from '../lib/quantity';
 import { PageSizeSelect } from './ManagementUI';
 import { editingApi } from '../api';
 import { matchedManagers } from '../lib/historyQuery';
@@ -25,6 +30,8 @@ import { calculateTaxAmounts, editableNumber } from '../lib/orderAmounts';
 import { differenceMoney, formatMoney as formatExactMoney, sumMoney, type MoneyValue } from '../lib/money';
 
 interface PurchasesScreenProps {
+  loading?: boolean;
+  loadError?: boolean;
   purchases: PurchaseRecord[];
   orders: OrderRecord[];
   canEnterPurchases: boolean;
@@ -46,7 +53,7 @@ function getPaginationItems(totalPages: number): Array<number | 'ellipsis'> {
 }
 
 function formatMoney(value?: MoneyValue | null) {
-  return `¥${formatExactMoney(value)}`;
+  return `${formatExactMoney(value)}`;
 }
 
 function textValue(value: unknown) {
@@ -61,7 +68,8 @@ function parseRate(value: string) {
   return value.trim() === '' ? null : Number(value);
 }
 
-export default function PurchasesScreen({ purchases, orders, canEnterPurchases, canEditPurchases, canDeletePurchases, onRefresh }: PurchasesScreenProps) {
+export default function PurchasesScreen({ loading = false, loadError = false, purchases, orders, canEnterPurchases, canEditPurchases, canDeletePurchases, onRefresh }: PurchasesScreenProps) {
+  const { setYear } = useOrderYear();
   const [projectId, setProjectId] = useState('');
   const [orderId, setOrderId] = useState('');
   const [manager, setManager] = useState('');
@@ -171,6 +179,7 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
   );
 
   const handleReset = () => {
+    setYear(currentOrderYear());
     setProjectId('');
     setOrderId('');
     setManager('');
@@ -541,33 +550,13 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
       </div>
 
       <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+        <div className="query-filter-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end">
+          <OrderYearFilter />
           <FilterInput label="项目编号" placeholder="输入项目编号" value={projectId} onChange={setProjectId} />
           <FilterInput label="销售订单号" placeholder="输入销售订单号" value={orderId} onChange={setOrderId} />
-          <FilterInput label="客户经理" placeholder="输入经理姓名" value={manager} onChange={setManager} />
-          <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={includeHistoryManager === 'true'} onChange={e => setIncludeHistoryManager(e.target.checked ? 'true' : '')} />包含历史负责人</label>
-          <FilterInput label="采购厂商" placeholder="输入采购厂商" value={supplier} onChange={setSupplier} />
+          <ManagerFilter value={manager} includeHistory={includeHistoryManager} onChange={setManager} onHistoryChange={setIncludeHistoryManager} />
+          <FilterInput label="采购厂商" placeholder="输入采购厂商名称" value={supplier} onChange={setSupplier} />
           <FilterInput label="公司合同号" placeholder="输入公司合同号" value={contractNo} onChange={setContractNo} />
-          <div className="space-y-1.5 md:col-span-2">
-            <label className="text-xs font-medium text-slate-500">回款时间</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                lang="zh-CN"
-                value={paymentStartDate}
-                onChange={(e) => setPaymentStartDate(e.target.value)}
-                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
-              />
-              <span className="shrink-0 text-xs text-slate-400">至</span>
-              <input
-                type="date"
-                lang="zh-CN"
-                value={paymentEndDate}
-                onChange={(e) => setPaymentEndDate(e.target.value)}
-                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
-              />
-            </div>
-          </div>
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-500">部门</label>
             <select
@@ -583,6 +572,27 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
               ))}
             </select>
           </div>
+          <div className="space-y-1.5 md:col-span-2 xl:col-start-1">
+            <label className="text-xs font-medium text-slate-500">付款时间范围</label>
+            <div className="flex items-center gap-2">
+              <DateInput
+                type="date"
+                lang="zh-CN"
+                value={paymentStartDate}
+                onChange={(e) => setPaymentStartDate(e.target.value)}
+                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
+              />
+              <span className="shrink-0 text-xs text-slate-400">至</span>
+              <DateInput
+                type="date"
+                lang="zh-CN"
+                value={paymentEndDate}
+                onChange={(e) => setPaymentEndDate(e.target.value)}
+                className="min-w-0 w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
+              />
+            </div>
+          </div>
+
         </div>
 
         <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -628,7 +638,7 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
             <tbody className="divide-y divide-slate-100">
               {paginatedPurchases.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-6 py-10 text-center text-slate-400 text-sm">暂无符合条件的采购记录</td>
+                  <td colSpan={11} className="px-6 py-10 text-center text-slate-400 text-sm">{loading ? '正在加载采购清单…' : loadError ? '清单加载失败，请点击上方重新加载' : '暂无符合条件的采购记录'}</td>
                 </tr>
               ) : (
                 paginatedPurchases.map((item, index) => {
@@ -649,11 +659,11 @@ export default function PurchasesScreen({ purchases, orders, canEnterPurchases, 
                       <td className="px-6 py-4 text-xs font-mono text-slate-500">{item.orderId}</td>
                       <td className="px-6 py-4 align-top text-xs leading-5 text-slate-700 whitespace-normal break-words">{order?.projectName || '-'}</td>
                       <td className="px-6 py-4 align-top text-xs leading-5 text-slate-700 whitespace-normal break-words">{item.supplier || '-'}</td>
-                      <td className="px-6 py-4 text-xs text-slate-700 font-medium">{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && <small className="block text-amber-700">历史：{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}</small>}</td>
+                      <td className="px-6 py-4 text-xs text-slate-700 font-normal">{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && <small className="block text-amber-700">历史：{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}</small>}</td>
                       <td className="px-6 py-4 text-xs font-mono text-slate-800">{item.contractNo}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">{formatMoney(item.contractAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-900">{formatMoney(item.contractAmount)}</td>
                       <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.invoiceAmount)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono font-semibold text-slate-800">{formatMoney(item.paymentAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-800">{formatMoney(item.paymentAmount)}</td>
                       <td className="px-6 py-4 text-center">
                         <div className="inline-flex items-center justify-center gap-1">
                           <button
@@ -1034,7 +1044,7 @@ function InfoSection({ title, items, actions }: { title: string; items: Array<[s
         {items.map(([label, value]) => (
           <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
             <p className="text-[11px] text-slate-400">{label}</p>
-            <p className="mt-1 text-xs font-semibold text-slate-800 break-words">{textValue(value)}</p>
+            <p className="mt-1 text-xs font-semibold text-slate-800 break-words">{label.includes('数量') ? formatQuantity(value) : textValue(value)}</p>
           </div>
         ))}
       </div>
@@ -1062,7 +1072,7 @@ const RecordRow: React.FC<{ values: Array<[string, unknown]>; actions?: React.Re
       {values.map(([label, value]) => (
         <div key={label}>
           <p className="text-[11px] text-slate-400">{label}</p>
-          <p className="mt-1 text-xs font-medium text-slate-700 break-words">{textValue(value)}</p>
+          <p className="mt-1 text-xs font-medium text-slate-700 break-words">{label.includes('数量') ? formatQuantity(value) : textValue(value)}</p>
         </div>
       ))}
       {actions && <div className="flex items-center justify-start sm:justify-end gap-1 lg:col-start-6">{actions}</div>}
@@ -1098,10 +1108,11 @@ function EntryButton({ icon, label, onClick }: { icon: React.ReactNode; label: s
 }
 
 function FormInput({ label, value, onChange, readOnly = false, type = 'text', className = '' }: { label: string; value: string; onChange?: (value: string) => void; readOnly?: boolean; type?: string; className?: string }) {
+  const Input = type === 'date' ? DateInput : 'input';
   return (
     <label className={`space-y-1 ${className}`}>
       <span className="block text-xs font-semibold text-slate-600">{label}</span>
-      <input type={type} lang={type === 'date' ? 'zh-CN' : undefined} min={type === 'number' ? '0' : undefined} step={type === 'number' ? 'any' : undefined} value={value} readOnly={readOnly} aria-readonly={readOnly} onChange={(e) => onChange?.(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+      <Input type={type} lang={type === 'date' ? 'zh-CN' : undefined} min={type === 'number' ? '0' : undefined} step={type === 'number' ? 'any' : undefined} value={value} readOnly={readOnly} aria-readonly={readOnly} onChange={(e) => onChange?.(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
     </label>
   );
 }

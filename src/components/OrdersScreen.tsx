@@ -1,3 +1,8 @@
+import OrderYearFilter, { useOrderYear } from './OrderYearFilter';
+import { currentOrderYear } from '../lib/orderYear';
+import ManagerFilter from './ManagerFilter';
+import DateInput from './DateInput';
+import { formatQuantity } from '../lib/quantity';
 import { PageSizeSelect } from './ManagementUI';
 import HistoryChange from './HistoryChange';
 import React, { useState, useMemo, useRef } from 'react';
@@ -27,7 +32,7 @@ import {
   ORDER_DETAIL_TABLE_WIDTHS,
 } from '../lib/orderDetailTables';
 import { calculateTaxAmounts, editableNumber } from '../lib/orderAmounts';
-import { applyOrderFilters, emptyOrderFilters, submitQueryFilters } from '../lib/queryFilterModel';
+import { applyOrderFilters, emptyOrderFilters, getDepartmentOptions, submitQueryFilters } from '../lib/queryFilterModel';
 import { formatMoney as formatExactMoney, type MoneyValue } from '../lib/money';
 
 interface OrderPurchaseEntry {
@@ -57,6 +62,8 @@ interface OrderDeliveryEntry {
 }
 
 interface OrdersScreenProps {
+  loading?: boolean;
+  loadError?: boolean;
   orders: OrderRecord[];
   onAddOrder: (order: OrderRecord) => Promise<void>;
   onImportExcel: (file: File) => Promise<{ batch_id: number; source_sha256: string; success_rows: number; skipped_rows: number }>;
@@ -65,6 +72,7 @@ interface OrdersScreenProps {
   onBatchSaved: () => Promise<void>;
   canEnterOrders: boolean;
   canEditOrders: boolean;
+  canTransferOrders?: boolean;
   canDeleteOrders: boolean;
   /** 整表导入是独立权限：能录订单不代表能导入整份台账。 */
   canImportLedger: boolean;
@@ -95,15 +103,19 @@ function createDeleteVerificationCode() {
   return Array.from(randomValues, (value) => deleteVerificationAlphabet[value % deleteVerificationAlphabet.length]).join('');
 }
 
-export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpdateOrder, onDeleteOrder, onBatchSaved, canEnterOrders, canEditOrders, canDeleteOrders, canImportLedger }: OrdersScreenProps) {
+export default function OrdersScreen({ loading = false, loadError = false, orders, onAddOrder, onImportExcel, onUpdateOrder, onDeleteOrder, onBatchSaved, canEnterOrders, canEditOrders, canTransferOrders = false, canDeleteOrders, canImportLedger }: OrdersScreenProps) {
+  const { setYear } = useOrderYear();
   const [importBusy,setImportBusy] = useState(false);
   const importWorking = useRef(false);
   const [importResult,setImportResult] = useState<{message: string; issues: ImportIssue[]} | null>(null);
   const [importDigest,setImportDigest] = useState('');
   // Query Filters State
+  const [manager, setManager] = useState('');
+  const [includeHistoryManager, setIncludeHistoryManager] = useState('');
+  const [department, setDepartment] = useState('');
+  const departmentOptions = useMemo(() => getDepartmentOptions(orders), [orders]);
   const [projectId, setProjectId] = useState('');
   const [orderId, setOrderId] = useState('');
-  const [orderDate, setOrderDate] = useState('');
   const [businessType, setBusinessType] = useState('');
   const [clientUnit, setClientUnit] = useState('');
   const [supplierName, setSupplierName] = useState('');
@@ -125,7 +137,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
   const [deletingOrder, setDeletingOrder] = useState(false);
   const [showLegacyPreview, setShowLegacyPreview] = useState(false);
   const [showSourceImport, setShowSourceImport] = useState(false);
-  const [historyChange, setHistoryChange] = useState<{orders: OrderRecord[]; mode: 'rename'|'transfer'} | null>(null);
+  const [historyChange, setHistoryChange] = useState<{orders: OrderRecord[]; mode: 'rename'|'transfer'|'transfer-order'} | null>(null);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -187,9 +199,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
   // Reset Filters
   const handleReset = () => {
+    setYear(currentOrderYear());
+    setManager('');
+    setIncludeHistoryManager('');
+    setDepartment('');
     setProjectId('');
     setOrderId('');
-    setOrderDate('');
     setBusinessType('');
     setClientUnit('');
     setSupplierName('');
@@ -202,9 +217,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
   const handleSearch = () => {
     setSubmittedFilters(
       submitQueryFilters({
+        manager,
+        includeHistoryManager,
+        department,
         projectId,
         orderId,
-        orderDate,
+        orderDate: '',
         businessType,
         clientUnit,
         supplierName,
@@ -287,7 +305,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
   const formatMoney = formatExactMoney;
   const formatOptionalMoney = (value: MoneyValue | undefined) =>
-    value === undefined ? '' : `¥${formatMoney(value)}`;
+    value === undefined ? '' : `${formatMoney(value)}`;
   const blank = (value: string | number | undefined | null) => value === undefined || value === null ? '' : String(value);
   const canManageOrderRows = canEditOrders || canDeleteOrders;
   const allFilteredSelected = filteredOrderLineIds.length > 0
@@ -928,7 +946,8 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
       {/* Filter / Query Bar */}
       <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4 overflow-x-auto">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end min-w-0">
+        <div className="query-filter-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end min-w-0">
+          <OrderYearFilter />
           {/* Project ID */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-500">项目编号</label>
@@ -953,18 +972,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             />
           </div>
 
-          {/* Order Date */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-500">销售订单日期</label>
-            <input 
-              type="date" 
-              lang="zh-CN"
-              value={orderDate}
-              onChange={e => setOrderDate(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
-            />
-          </div>
-
+          <ManagerFilter value={manager} includeHistory={includeHistoryManager} onChange={setManager} onHistoryChange={setIncludeHistoryManager} />
+          <label className="space-y-1.5 text-xs font-medium text-slate-500"><span>部门</span>
+            <select className="block w-full px-3 py-2 border border-slate-200 rounded-lg text-xs text-slate-700" value={department} onChange={e => setDepartment(e.target.value)}>
+              <option value="">全部部门</option>{departmentOptions.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
           {/* Business Type */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-slate-500">业务类型</label>
@@ -982,7 +995,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             <label className="text-xs font-medium text-slate-500">客户单位名称</label>
             <input 
               type="text" 
-              placeholder="输入客户名称"
+              placeholder="输入客户单位名称"
               value={clientUnit}
               onChange={e => setClientUnit(e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
@@ -993,7 +1006,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
             <label className="text-xs font-medium text-slate-500">采购厂商</label>
             <input
               type="text"
-              placeholder="输入采购厂商"
+              placeholder="输入采购厂商名称"
               value={supplierName}
               onChange={e => setSupplierName(e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
@@ -1004,7 +1017,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
           <div className="md:col-span-2 space-y-1.5">
             <label className="text-xs font-medium text-slate-500">销售订单日期范围</label>
             <div className="flex items-center gap-2">
-              <input 
+              <DateInput
                 type="date" 
                 lang="zh-CN"
                 value={startDate}
@@ -1012,7 +1025,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                 className="w-full px-3 py-1.5 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-xs text-slate-700"
               />
               <span className="text-slate-400 text-xs">至</span>
-              <input 
+              <DateInput
                 type="date" 
                 lang="zh-CN"
                 value={endDate}
@@ -1076,7 +1089,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
               {paginatedOrders.length === 0 ? (
                 <tr>
                   <td colSpan={13} className="px-6 py-10 text-center text-slate-400 text-sm">
-                    暂无符合条件的订单记录
+                    {loading ? '正在加载订单清单…' : loadError ? '清单加载失败，请点击上方重新加载' : '暂无符合条件的订单记录'}
                   </td>
                 </tr>
               ) : (
@@ -1093,18 +1106,18 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                       />
                     </td>
                     <td className="px-6 py-4 text-xs font-mono text-slate-500">{item.projectId}</td>
-                    <td className="px-6 py-4 text-xs font-mono font-semibold text-blue-600">{item.orderId}</td>
+                    <td className="px-6 py-4 text-xs font-mono font-normal text-blue-600">{item.orderId}</td>
                     <td className="px-6 py-4 text-xs text-slate-700 truncate" title={item.manager || '-'}>{item.manager || '-'}</td>
                     <td className="px-6 py-4 text-xs text-slate-700 truncate" title={item.userName || '-'}>{item.userName || '-'}</td>
-                    <td className="px-6 py-4 text-xs font-medium text-slate-900 truncate" title={item.projectName || '-'}>{item.projectName || '-'}</td>
+                    <td className="px-6 py-4 text-xs font-normal text-slate-900 truncate" title={item.projectName || '-'}>{item.projectName || '-'}</td>
                     <td className="px-6 py-4 text-xs text-slate-600 font-mono">{item.orderDate}</td>
-                    <td className="px-6 py-4 text-xs font-medium text-slate-900 truncate" title={item.goodsName}>{item.goodsName}</td>
-                    <td className="px-6 py-4 text-xs text-center text-slate-700 font-sans">{item.quantity}</td>
-                    <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">
-                      ¥{formatMoney(item.orderValue)}
+                    <td className="px-6 py-4 text-xs font-normal text-slate-900 truncate" title={item.goodsName}>{item.goodsName}</td>
+                    <td className="px-6 py-4 text-xs text-center text-slate-700 font-sans">{formatQuantity(item.quantity)}</td>
+                    <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-900">
+                      {formatMoney(item.orderValue)}
                     </td>
-                    <td className="px-6 py-4 text-xs text-center font-mono font-semibold text-slate-800">{item.deliveredQty}</td>
-                    <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">¥{formatMoney(item.deliveryValue || 0)}</td>
+                    <td className="px-6 py-4 text-xs text-center font-mono font-normal text-slate-800">{formatQuantity(item.deliveredQty)}</td>
+                    <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-900">{formatMoney(item.deliveryValue || 0)}</td>
                     <td className="px-6 py-4 text-center">
                       <div className="inline-flex items-center justify-center gap-1">
                       <button
@@ -1315,11 +1328,11 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
 
       {selectedOrder && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-6xl max-h-[88vh] overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-6xl max-h-[88vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex shrink-0 items-center justify-between bg-slate-50">
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-blue-600 mb-1">{selectedOrder.orderId}</p>
-                <h2 className="text-base font-bold text-slate-900 truncate">{selectedOrder.goodsName}</h2>{canEditOrders && <div className="flex gap-3 mt-2 text-xs"><button type="button" className="text-blue-700" onClick={() => setHistoryChange({orders:[selectedOrder],mode:'rename'})}>变更订单号</button><button type="button" className="text-blue-700" onClick={() => setHistoryChange({orders:[selectedOrder],mode:'transfer'})}>框架整体交接</button></div>}
+                <h2 className="text-base font-bold text-slate-900 truncate">{selectedOrder.goodsName}</h2>{canEditOrders && <div className="flex gap-3 mt-2 text-xs"><button type="button" className="text-blue-700" onClick={() => setHistoryChange({orders:[selectedOrder],mode:'rename'})}>变更订单号</button>{canTransferOrders && <><button type="button" className="text-blue-700" onClick={() => setHistoryChange({orders:[selectedOrder],mode:'transfer-order'})}>当前订单交接</button><button type="button" className="text-blue-700" onClick={() => setHistoryChange({orders:[selectedOrder],mode:'transfer'})}>整个框架交接</button></>}</div>}
               </div>
               <button
                 type="button"
@@ -1334,7 +1347,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
               </button>
             </div>
 
-            <div className="p-6 space-y-5 overflow-y-auto max-h-[calc(88vh-73px)]">
+            <div className="min-h-0 flex-1 p-6 space-y-5 overflow-y-auto">
               <section>
                 <h3 className="text-sm font-bold text-slate-900 mb-3">当前订单信息</h3>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -1359,13 +1372,13 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                     ['物资/服务名称', selectedOrder.goodsName],
                     ['规格型号', selectedOrder.specModel || ''],
                     ['单位', selectedOrder.unitName || selectedOrder.quantity.replace(/^[\d.]+\s*/, '') || ''],
-                    ['数量', selectedOrder.quantity],
+                    ['数量', formatQuantity(selectedOrder.quantity)],
                     ['销售税率', selectedOrder.salesTaxRate === undefined ? '' : `${selectedOrder.salesTaxRate}%`],
                     ['不含税销售单价', formatOptionalMoney(selectedOrder.netUnitPrice)],
                     ['销售单价', formatOptionalMoney(selectedOrder.unitPrice)],
                     ['不含税订单金额', formatOptionalMoney(selectedOrder.netRevenue)],
                     ['销售税金', formatOptionalMoney(selectedOrder.salesTaxAmount)],
-                    ['销售订单金额', `¥${formatMoney(selectedOrder.orderValue)}`],
+                    ['销售订单金额', `${formatMoney(selectedOrder.orderValue)}`],
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                       <p className="text-[11px] font-medium text-slate-400">{label}</p>
@@ -1473,12 +1486,12 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                         selectedDeliveries.map((item) => (
                           <tr key={item.id} className="text-xs text-slate-700">
                             <td className="px-4 py-2 whitespace-nowrap">{item.deliveryDate}</td>
-                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{blank(item.deliveredQty)}</td>
+                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatQuantity(item.deliveredQty)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveredNetRevenue)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveryValue)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveredNetCost)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.deliveryCost)}</td>
-                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{blank(item.pendingQty)}</td>
+                            <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatQuantity(item.pendingQty)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.pendingNetAmount)}</td>
                             <td className="px-4 py-2 text-right font-mono whitespace-nowrap">{formatOptionalMoney(item.pendingAmount)}</td>
                             {canManageOrderRows && (
@@ -1515,7 +1528,9 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                 </div>
               </section>
 
-              {canEnterOrders && <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            </div>
+
+              {canEnterOrders && <div className="flex shrink-0 flex-wrap justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-white">
                 <button
                   type="button"
                   onClick={openCreatePurchase}
@@ -1531,7 +1546,6 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                   录入交付信息
                 </button>
               </div>}
-            </div>
           </div>
         </div>
       )}
@@ -1606,7 +1620,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-600">交付日期</label>
-                  <input type="date" lang="zh-CN" value={newDelivery.deliveryDate} onChange={e => setNewDelivery({...newDelivery, deliveryDate: e.target.value})} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500" />
+                  <DateInput type="date" lang="zh-CN" value={newDelivery.deliveryDate} onChange={e => setNewDelivery({...newDelivery, deliveryDate: e.target.value})} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500" />
                 </div>
                 {[
                   ['交付数量', 'deliveredQty'],
@@ -1693,7 +1707,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                     type="text" 
                     required
                     placeholder="如: ORD-2023-9009"
-                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号或框架整体交接" : undefined} value={newOrder.orderId}
+                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号、当前订单交接或整个框架交接" : undefined} value={newOrder.orderId}
                     onChange={e => setNewOrder({...newOrder, orderId: e.target.value})}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   />
@@ -1703,7 +1717,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                   <label className="text-xs font-semibold text-slate-600">部门</label>
                   <input
                     type="text"
-                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号或框架整体交接" : undefined} value={newOrder.department}
+                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号、当前订单交接或整个框架交接" : undefined} value={newOrder.department}
                     onChange={e => setNewOrder({...newOrder, department: e.target.value})}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500"
                   />
@@ -1713,7 +1727,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                   <label className="text-xs font-semibold text-slate-600">分公司</label>
                   <input
                     type="text"
-                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号或框架整体交接" : undefined} value={newOrder.branchCompany}
+                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号、当前订单交接或整个框架交接" : undefined} value={newOrder.branchCompany}
                     onChange={e => setNewOrder({...newOrder, branchCompany: e.target.value})}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500"
                   />
@@ -1723,7 +1737,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                   <label className="text-xs font-semibold text-slate-600">客户经理</label>
                   <input
                     type="text"
-                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号或框架整体交接" : undefined} value={newOrder.manager}
+                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号、当前订单交接或整个框架交接" : undefined} value={newOrder.manager}
                     onChange={e => setNewOrder({...newOrder, manager: e.target.value})}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500"
                   />
@@ -1732,7 +1746,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                 {/* Order Date */}
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-600">销售订单日期 *</label>
-                  <input 
+                  <DateInput
                     type="date" 
                     lang="zh-CN"
                     required
@@ -1769,7 +1783,7 @@ export default function OrdersScreen({ orders, onAddOrder, onImportExcel, onUpda
                   <label className="text-xs font-semibold text-slate-600">三级团队名称</label>
                   <input
                     type="text"
-                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号或框架整体交接" : undefined} value={newOrder.teamName}
+                    readOnly={Boolean(editingOrder)} title={editingOrder ? "请在订单详情使用变更订单号、当前订单交接或整个框架交接" : undefined} value={newOrder.teamName}
                     onChange={e => setNewOrder({...newOrder, teamName: e.target.value})}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-blue-500"
                   />

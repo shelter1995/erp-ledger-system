@@ -17,3 +17,10 @@ assert.equal(formatDatabaseUtcTime('2026-09-14T06:33:18+00:00'), '2026-09-14 14:
 assert.equal(formatDatabaseUtcTime('2026-09-14T15:34:34+08:00'), '2026-09-14 15:34:34');
 
 console.log('date time tests passed');
+
+assert.equal(dateTime.formatBeijingDataTime('2026-09-30 11:57:14.000000'), '2026-09-30 11:57:14');
+assert.equal(dateTime.formatBeijingDataTime('2026-09-30 11:57:14.123456'), '2026-09-30 11:57:14');
+assert.equal(dateTime.formatBeijingDataTime('2026-09-30T03:57:14.000000Z'), '2026-09-30 11:57:14');
+assert.equal(dateTime.formatBeijingDataTime('2026-09-30T11:57:14+08:00'), '2026-09-30 11:57:14');
+assert.equal(dateTime.formatBeijingDataTime(null), '');
+assert.equal(dateTime.formatBeijingDataTime('invalid'), '');

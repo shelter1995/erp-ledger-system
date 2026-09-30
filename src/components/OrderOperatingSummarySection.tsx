@@ -116,7 +116,7 @@ export default function OrderOperatingSummarySection({
                       <td className="px-4 py-2 font-mono">{item.orderDate || '-'}</td>
                       {amountColumns.map((column) => (
                         <td key={column.key} className="px-4 py-2 text-right font-mono">
-                          ¥{formatMoney(item[column.key])}
+                          {formatMoney(item[column.key])}
                         </td>
                       ))}
                     </tr>
@@ -150,7 +150,7 @@ export default function OrderOperatingSummarySection({
                                     <td className="px-3 py-2 whitespace-normal break-words">{line.supplier}</td>
                                     {amountColumns.map((column) => (
                                       <td key={column.key} className="px-3 py-2 text-right font-mono">
-                                        ¥{formatMoney(line[column.key])}
+                                        {formatMoney(line[column.key])}
                                       </td>
                                     ))}
                                     {showLineAction && (

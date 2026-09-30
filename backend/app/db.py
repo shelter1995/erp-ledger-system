@@ -73,6 +73,10 @@ def apply_runtime_migrations() -> None:
         project_name_column_added = False
         line_identity_columns_added = []
         additional_columns = {
+            "sales_order": {"ownership_overridden": "TINYINT NOT NULL DEFAULT 0",
+                            "department": "VARCHAR(64) NULL", "branch_company": "VARCHAR(128) NULL",
+                            "account_manager": "VARCHAR(255) NULL", "team_level3_name": "VARCHAR(128) NULL",
+                            "manager_history": "JSON NULL"},
             "project": {"version": "BIGINT NOT NULL DEFAULT 1"},
             "import_batch": {"source_sha256": "CHAR(64) NULL", "review_json": "JSON NULL", "baseline_sha256": "CHAR(64) NULL", "pre_import_backup_id": "BIGINT UNSIGNED NULL"},
             "order_line": {

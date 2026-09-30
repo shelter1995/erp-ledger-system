@@ -71,7 +71,7 @@ def route_permissions(path, method):
         return {'maintenance_view', 'ledger_import'}
     if path.startswith('/api/import/'):
         return {'maintenance_view', 'data_replace'}
-    if path == '/api/history/transfer-project':
+    if path in {'/api/history/transfer-project', '/api/history/transfer-order'}:
         return {'order_view', 'order_edit', 'department_transfer'}
     if path.startswith('/api/orders') or path.startswith('/api/history'):
         return {'order_view'}

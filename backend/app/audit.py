@@ -52,7 +52,7 @@ def _order_context(conn: Connection, before: Mapping[str, Any] | None, after: Ma
     row = conn.execute(
         text(
             """
-            SELECT p.project_code, so.order_no, ol.goods_name, ol.specification_model, CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
+            SELECT p.project_code, so.order_no, ol.goods_name, ol.specification_model, CASE WHEN so.ownership_overridden=1 THEN so.department WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
             FROM order_line ol
             JOIN sales_order so ON so.id = ol.sales_order_id
             JOIN project p ON p.id = so.project_id

@@ -1,13 +1,14 @@
+import OrderYearFilter, { useOrderYear } from './OrderYearFilter';
+import { currentOrderYear, orderYearParams } from '../lib/orderYear';
 import DateInput from './DateInput';
 import { accountApi, AggregateData, Department } from '../api';
 import React, { useState, useEffect } from 'react';
 import {
   ArrowRight,
+  Filter,
   BadgeDollarSign,
-  Calendar,
   CheckCircle2,
   ClipboardList,
-  Filter,
   HandCoins,
   ReceiptText,
   RefreshCw,
@@ -56,6 +57,7 @@ function smoothPath(points: TrendPoint[]) {
 }
 
 export default function DashboardScreen({ logs, ledgers, orders, onNavigate, serverMode = false, showLogs = true }: DashboardScreenProps) {
+  const {year,setYear}=useOrderYear();
   const [hoveredTrendIndex, setHoveredTrendIndex] = useState<number | null>(null);
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [startDate, setStartDate] = useState('');
@@ -64,7 +66,7 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
   const [aggregate,setAggregate]=useState<Omit<AggregateData,'items'>|null>(null);
   const [departments,setDepartments]=useState<Department[]>([]);
   const [loadError,setLoadError]=useState('');
-  useEffect(()=>{if(!serverMode)return;let active=true;setAggregate(null);setLoadError('');accountApi.dashboard({department:selectedDepartment,start_date:startDate,end_date:endDate}).then(r=>{if(active)setAggregate(r);}).catch(e=>{if(active)setLoadError(e.message);});return()=>{active=false;};},[serverMode,selectedDepartment,startDate,endDate]);
+  useEffect(()=>{if(!serverMode)return;let active=true;const controller=new AbortController();setAggregate(null);setLoadError('');accountApi.dashboard({...orderYearParams(year),department:selectedDepartment,start_date:startDate,end_date:endDate},controller.signal).then(r=>{if(active)setAggregate(r);}).catch(e=>{if(active)setLoadError(e.message);});return()=>{active=false;controller.abort();};},[serverMode,selectedDepartment,startDate,endDate,year]);
   useEffect(()=>{if(serverMode)accountApi.departments().then(r=>setDepartments(r.items)).catch(e=>setLoadError(e.message));},[serverMode]);
   const departmentOptions = serverMode ? departments.filter(d=>d.is_active).map(d=>d.name) : getDashboardDepartments(orders);
   const dashboardFilters = { department: selectedDepartment, startDate, endDate };
@@ -128,58 +130,35 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">仪表盘概览</h1>{loadError&&<p role="alert" className="text-red-700">{loadError}</p>}
-          <p className="text-sm text-slate-500 font-sans mt-1">欢迎回来，这是今天的业务实时动态。</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
-          <label className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm text-xs">
-            <Filter className="w-4 h-4 text-blue-600" />
-            <span className="font-medium text-slate-500">部门</span>
-            <select
-              value={selectedDepartment}
-              onChange={(event) => setSelectedDepartment(event.target.value)}
-              className="bg-transparent outline-none text-slate-800 font-medium cursor-pointer min-w-[92px]"
-              aria-label="按部门筛选仪表盘指标"
-            >
-              <option value="">全部部门</option>
-              {departmentOptions.map((department) => (
-                <option key={department} value={department}>
-                  {department}
-                </option>
-              ))}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">仪表盘概览</h1>
+        <p className="text-sm text-slate-500 mt-1">欢迎回来，这是今天的业务实时动态。</p>
+      </div>
+      <div className="erp-ui ui-card p-5 space-y-4">
+        <div className="query-filter-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end">
+          <OrderYearFilter/>
+          <label className="block min-w-0 text-xs font-medium text-slate-500">部门
+            <select value={selectedDepartment} onChange={e=>setSelectedDepartment(e.target.value)} className="block w-full mt-1.5" aria-label="按部门筛选仪表盘指标">
+              <option value="">全部部门</option>{departmentOptions.map(d=><option key={d}>{d}</option>)}
             </select>
           </label>
-          <div className="dashboard-date-filter grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:flex items-center gap-2 w-full sm:w-auto px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg shadow-sm text-xs">
-            <span className="col-span-3 inline-flex items-center gap-2 shrink-0 whitespace-nowrap"><Calendar className="w-4 h-4 text-slate-400" />
-            <span className="font-medium text-slate-500">销售订单日期</span></span>
-            <DateInput
-              type="date"
-              value={startDate}
-              onChange={(event) => setStartDate(event.target.value)}
-              max={endDate || undefined}
-              className="w-full min-w-0 sm:w-[116px] bg-transparent outline-none text-slate-800 font-medium cursor-pointer"
-              aria-label="销售订单日期开始日期"
-            />
-            <span className="text-slate-400">至</span>
-            <DateInput
-              type="date"
-              value={endDate}
-              onChange={(event) => setEndDate(event.target.value)}
-              min={startDate || undefined}
-              className="w-full min-w-0 sm:w-[116px] bg-transparent outline-none text-slate-800 font-medium cursor-pointer"
-              aria-label="销售订单日期结束日期"
-            />
-          </div>
-
+          <fieldset className="md:col-span-2 min-w-0"><legend className="mb-1.5 text-xs font-medium text-slate-500">销售订单日期</legend>
+            <div className="dashboard-date-filter grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+              <DateInput type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} max={endDate||undefined} className="w-full min-w-0" aria-label="销售订单日期开始日期"/>
+              <span className="text-xs text-slate-400">至</span>
+              <DateInput type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} min={startDate||undefined} className="w-full min-w-0" aria-label="销售订单日期结束日期"/>
+            </div>
+          </fieldset>
         </div>
+        <div className="flex justify-end border-t border-slate-100 pt-3"><button className="ui-button" onClick={()=>{setYear(currentOrderYear());setSelectedDepartment('');setStartDate('');setEndDate('');}}><RefreshCw className="h-3.5 w-3.5"/>重置</button></div>
       </div>
+      {loadError&&<p role="alert" className="text-red-700">{loadError}</p>}
+      {serverMode&&!aggregate&&!loadError&&<p role="status" className="text-sm text-slate-500">正在加载当前年度范围的指标…</p>}
 
       <section className="space-y-3" aria-labelledby="core-metrics-heading">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 id="core-metrics-heading" className="text-sm font-semibold text-slate-900">核心经营指标</h2>
-          <p className="text-xs text-slate-500">按当前部门与销售订单日期统计</p>
+          <p className="text-xs text-slate-500">按当前订单年度、部门与销售订单日期统计</p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {coreMetrics.map((metric) => {
@@ -363,11 +342,11 @@ export default function DashboardScreen({ logs, ledgers, orders, onNavigate, ser
             <tbody className="divide-y divide-slate-100">
               {recentLogs.map((log) => (
                 <tr key={log.id} className="hover:bg-slate-50 transition-colors group">
-                  <td className="px-6 py-3.5 text-sm font-medium text-slate-700">{log.user}</td>
+                  <td className="px-6 py-3.5 text-sm font-normal text-slate-700">{log.user}</td>
                   <td className="px-6 py-3.5 text-sm text-slate-600">{log.module}</td>
                   <td className="px-6 py-3.5 text-sm text-slate-600 max-w-md truncate">{log.details}</td>
                   <td className="px-6 py-3.5">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/50">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-normal bg-emerald-50 text-emerald-700 border border-emerald-200/50">
                       {log.status}
                     </span>
                   </td>

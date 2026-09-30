@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ..order_year import OrderYear, apply_order_year
 
 from decimal import Decimal
 
@@ -133,6 +134,7 @@ class PurchaseOrderLineSelection(BaseModel):
 
 @router.get("")
 def list_purchases(
+    order_year: OrderYear = None,
     project_id: str | None = None,
     order_id: str | None = None,
     manager: str | None = None,
@@ -149,6 +151,7 @@ def list_purchases(
 ) -> dict:
     conditions = ["1=1"]
     params: dict[str, object] = {"limit": limit, "offset": offset}
+    apply_order_year(conditions, params, order_year)
     if project_id:
         conditions.append("project_code LIKE :project_id")
         params["project_id"] = f"%{project_id}%"
@@ -917,7 +920,7 @@ def _ensure_order_line_in_conn(
         text(
             """
             SELECT ol.id AS order_line_id, ol.quantity,
-                   CASE WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
+                   CASE WHEN so.ownership_overridden=1 THEN so.department WHEN ol.source_preserved=1 THEN ol.line_department ELSE p.department END AS department
             FROM order_line ol
             JOIN sales_order so ON so.id = ol.sales_order_id AND so.deleted_at IS NULL
             JOIN project p ON p.id = so.project_id AND p.deleted_at IS NULL

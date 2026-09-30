@@ -19,6 +19,8 @@ export interface HistoryContext {
   order_numbers: Array<{ order_no: string; history_order: number; source: string }>;
   managers: Array<{ manager_name: string; history_order: number; effective_from: string | null; source: string }>;
   affected_lines: number;
+  order_scope: { orders: number; lines: number } | null;
+  project_scope: { orders: number; lines: number } | null;
 }
 const API_BASE = ((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_API_BASE_URL) || '/api';
 import type { PreviewCreated, PreviewPage, PreviewResult, PreviewSummary, RowResolution } from './lib/legacyImportPreview';
@@ -540,6 +542,7 @@ export function editingApi(editContext?: EditContext) {
     editRequest<{ items: BackendUserRecord[] }>(`/auth/users/${userId}/permanent`, { method: 'DELETE' }),
   history: (id: number) => editRequest<HistoryContext>(`/history/lines/${id}`),
   renameOrders: (items: Array<{order_line_id: number; expected_order_no: string; order_no: string; reason: string}>) => editRequest<{updated: number}>('/history/rename-orders', {method:'POST',body:JSON.stringify({items})}),
+  transferOrder: (data: unknown) => editRequest<{updated: boolean}>('/history/transfer-order', {method:'POST',body:JSON.stringify(data)}),
   transferProject: (data: unknown) => editRequest<{updated: boolean}>('/history/transfer-project', {method:'POST',body:JSON.stringify(data)}),
   exportHistory: (params: Record<string,string | number | undefined> = {}) => requestBlob(`/history/export${query(params)}`),
   health: () => editRequest<BackendHealth>('/health'),
@@ -556,8 +559,8 @@ export function editingApi(editContext?: EditContext) {
   dashboardSummary: () => editRequest<BackendDashboardSummary>('/dashboard/summary'),
   ledgers: (params: Record<string, string | number | undefined> = {}) =>
     editRequest<PageResult<BackendProjectLedger>>(`/ledgers${query(params)}`),
-  orders: (params: Record<string, string | number | undefined> = {}) =>
-    editRequest<PageResult<BackendOrderRecord>>(`/orders${query(params)}`),
+  orders: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    editRequest<PageResult<BackendOrderRecord>>(`/orders${query(params)}`, {signal}),
   createOrder: (data: Record<string, string | number | null>) =>
     editRequest<BackendOrderRecord>('/orders', { method: 'POST', body: JSON.stringify(data) }),
   createOrdersBatch: (items: Array<Record<string, string | number | null>>) =>
@@ -599,8 +602,8 @@ export function editingApi(editContext?: EditContext) {
   updateOrder: (orderLineId: number, data: Record<string, string | number | null>) =>
     editRequest<BackendOrderRecord>(`/orders/${orderLineId}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteOrder: (orderLineId: number) => editRequest<{ deleted: boolean; order_line_id: number }>(`/orders/${orderLineId}`, { method: 'DELETE' }),
-  purchases: (params: Record<string, string | number | undefined> = {}) =>
-    editRequest<PageResult<BackendPurchaseRecord>>(`/purchases${query(params)}`),
+  purchases: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    editRequest<PageResult<BackendPurchaseRecord>>(`/purchases${query(params)}`, {signal}),
   batchPurchaseEditorRows: (orderLineIds: number[]) =>
     editRequest<BackendBatchEditorResponse>('/purchases/batch-editor/rows', {
       method: 'POST',
@@ -650,8 +653,8 @@ export function editingApi(editContext?: EditContext) {
     editRequest<BackendPurchaseDetail>(`/purchases/payments/${paymentId}`, { method: 'PUT', body: JSON.stringify(data) }),
   deletePurchasePayment: (paymentId: number) =>
     editRequest<BackendPurchaseDetail>(`/purchases/payments/${paymentId}`, { method: 'DELETE' }),
-  sales: (params: Record<string, string | number | undefined> = {}) =>
-    editRequest<PageResult<BackendSalesRecord>>(`/sales${query(params)}`),
+  sales: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    editRequest<PageResult<BackendSalesRecord>>(`/sales${query(params)}`, {signal}),
   batchSalesEditorRows: (orderLineIds: number[]) =>
     editRequest<BackendBatchEditorResponse>('/sales/batch-editor/rows', {
       method: 'POST',
@@ -722,12 +725,23 @@ export interface AggregateData {
   ranking: import('./lib/dashboardMetrics').DashboardRankingItem[];
   latestModifiedAt: string;
 }
+export interface LedgerProjectDetail extends SummaryItem {
+  order_date: string;
+  orders: (OrderSummary & { order_date: string; lines?: LedgerMaterialLine[] })[];
+}
+export interface LedgerMaterialLine {
+  goods_name: string; specification_model: string; quantity: string; unit_name: string; supplier_name: string;
+  order_value: string; purchase_amount: string; delivery_value: string; delivery_cost: string;
+  total_received: string; total_paid: string; sales_invoice_amount: string; total_finance_checked: string;
+  delivery_accounts_receivable: string; invoice_accounts_receivable: string;
+}
 export const accountApi = {
   latestModified: () => request<{latestModifiedAt: string}>('/data/latest-modified'),
   saveProfile: (display_name:string,avatar_data:string|null) => request<{user:BackendAuthUser}>('/auth/profile',{method:'PUT',body:JSON.stringify({display_name,avatar_data})}),
   logs: (offset:number,limit=20) => request<PageResult<BackendOperationLog>>('/logs'+query({offset,limit})),
   backups: (offset:number,limit=20) => request<PageResult<BackendBackupInfo>>('/backups'+query({offset,limit})),
-  orderOptions: (module:'sales'|'purchases') => request<{items:BackendOrderRecord[]}>('/'+module+'/order-options'),
+  orderYears: (signal?:AbortSignal) => request<{years:number[]}>('/data/order-years',{signal}),
+  orderOptions: (module:'sales'|'purchases', params:Record<string,string>={}, signal?:AbortSignal) => request<{items:BackendOrderRecord[]}>('/'+module+'/order-options'+query(params),{signal}),
   departments: () => request<{items: Department[]}>('/departments'),
   saveDepartment: (name: string, is_active: boolean, id?: number) => request('/departments' + (id ? '/' + id : ''), {method: id ? 'PUT':'POST',body:JSON.stringify({name,is_active})}),
   users: (status='active') => request<{items:AccountRecord[]}>('/auth/users'+query({status})),
@@ -738,7 +752,8 @@ export const accountApi = {
   reset: (id:number,password:string) => request('/auth/users/'+id+'/reset-password',{method:'POST',body:JSON.stringify({password})}),
   changePassword: (old_password:string,new_password:string,confirm_password:string) => request('/auth/change-password',{method:'POST',body:JSON.stringify({old_password,new_password,confirm_password})}),
   logout: () => request('/auth/logout',{method:'POST'}),
-  dashboard: (params:Record<string,string>={}) => request<Omit<AggregateData,'items'>>('/dashboard/data'+query(params)),
-  summary: (params:Record<string,string>={}) => request<AggregateData>('/ledgers/summary'+query(params)),
+  dashboard: (params:Record<string,string>={}, signal?:AbortSignal) => request<Omit<AggregateData,'items'>>('/dashboard/data'+query(params),{signal}),
+  summary: (params:Record<string,string>={}, signal?:AbortSignal) => request<AggregateData>('/ledgers/summary'+query(params),{signal}),
+  projectDetail: (projectCode:string,params:Record<string,string>={}) => request<LedgerProjectDetail>('/ledgers/project-detail'+query({...params,project_code:projectCode})),
   exportSummary: (params:Record<string,string>={}) => requestBlob('/ledgers/export-summary'+query(params)),
 };

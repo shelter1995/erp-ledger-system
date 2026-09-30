@@ -1,3 +1,5 @@
+import OrderYearFilter, { useOrderYear } from './OrderYearFilter';
+import { currentOrderYear } from '../lib/orderYear';
 import ManagerFilter from './ManagerFilter';
 import DateInput from './DateInput';
 import { formatQuantity } from '../lib/quantity';
@@ -51,7 +53,7 @@ function getPaginationItems(totalPages: number): Array<number | 'ellipsis'> {
 }
 
 function formatMoney(value?: MoneyValue | null) {
-  return `¥${formatExactMoney(value)}`;
+  return `${formatExactMoney(value)}`;
 }
 
 function textValue(value: unknown) {
@@ -67,6 +69,7 @@ function parseRate(value: string) {
 }
 
 export default function PurchasesScreen({ loading = false, loadError = false, purchases, orders, canEnterPurchases, canEditPurchases, canDeletePurchases, onRefresh }: PurchasesScreenProps) {
+  const { setYear } = useOrderYear();
   const [projectId, setProjectId] = useState('');
   const [orderId, setOrderId] = useState('');
   const [manager, setManager] = useState('');
@@ -176,6 +179,7 @@ export default function PurchasesScreen({ loading = false, loadError = false, pu
   );
 
   const handleReset = () => {
+    setYear(currentOrderYear());
     setProjectId('');
     setOrderId('');
     setManager('');
@@ -547,12 +551,28 @@ export default function PurchasesScreen({ loading = false, loadError = false, pu
 
       <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
         <div className="query-filter-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end">
+          <OrderYearFilter />
           <FilterInput label="项目编号" placeholder="输入项目编号" value={projectId} onChange={setProjectId} />
           <FilterInput label="销售订单号" placeholder="输入销售订单号" value={orderId} onChange={setOrderId} />
           <ManagerFilter value={manager} includeHistory={includeHistoryManager} onChange={setManager} onHistoryChange={setIncludeHistoryManager} />
           <FilterInput label="采购厂商" placeholder="输入采购厂商名称" value={supplier} onChange={setSupplier} />
           <FilterInput label="公司合同号" placeholder="输入公司合同号" value={contractNo} onChange={setContractNo} />
-          <div className="space-y-1.5 md:col-span-2">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-500">部门</label>
+            <select
+              value={department}
+              onChange={(e) => setDepartment(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white text-xs text-slate-700"
+            >
+              <option value="">全部部门</option>
+              {departmentOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5 md:col-span-2 xl:col-start-1">
             <label className="text-xs font-medium text-slate-500">付款时间范围</label>
             <div className="flex items-center gap-2">
               <DateInput
@@ -572,21 +592,7 @@ export default function PurchasesScreen({ loading = false, loadError = false, pu
               />
             </div>
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-500">部门</label>
-            <select
-              value={department}
-              onChange={(e) => setDepartment(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white text-xs text-slate-700"
-            >
-              <option value="">全部部门</option>
-              {departmentOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </div>
+
         </div>
 
         <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -653,11 +659,11 @@ export default function PurchasesScreen({ loading = false, loadError = false, pu
                       <td className="px-6 py-4 text-xs font-mono text-slate-500">{item.orderId}</td>
                       <td className="px-6 py-4 align-top text-xs leading-5 text-slate-700 whitespace-normal break-words">{order?.projectName || '-'}</td>
                       <td className="px-6 py-4 align-top text-xs leading-5 text-slate-700 whitespace-normal break-words">{item.supplier || '-'}</td>
-                      <td className="px-6 py-4 text-xs text-slate-700 font-medium">{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && <small className="block text-amber-700">历史：{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}</small>}</td>
+                      <td className="px-6 py-4 text-xs text-slate-700 font-normal">{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && <small className="block text-amber-700">历史：{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}</small>}</td>
                       <td className="px-6 py-4 text-xs font-mono text-slate-800">{item.contractNo}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono font-medium text-slate-900">{formatMoney(item.contractAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-900">{formatMoney(item.contractAmount)}</td>
                       <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.invoiceAmount)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono font-semibold text-slate-800">{formatMoney(item.paymentAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono font-normal text-slate-800">{formatMoney(item.paymentAmount)}</td>
                       <td className="px-6 py-4 text-center">
                         <div className="inline-flex items-center justify-center gap-1">
                           <button

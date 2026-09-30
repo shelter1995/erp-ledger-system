@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .order_year import apply_order_year
 
 from copy import copy
 from datetime import date, datetime
@@ -618,6 +619,7 @@ def filtered_export_rows(conn, user, filters=None):
     conditions = ["p.deleted_at IS NULL", "so.deleted_at IS NULL", "ol.deleted_at IS NULL"]
     params: dict[str, object] = {}
     active_filters = filters or {}
+    apply_order_year(conditions, params, active_filters.get('order_year'), 'fin.order_date')
     project_text_filters = {
         "project_id": ("p.project_code", True),
         "department": ("fin.department", False),
@@ -631,7 +633,7 @@ def filtered_export_rows(conn, user, filters=None):
         params[key] = f"%{value}%" if use_like else value
 
     if active_filters.get("manager"):
-        conditions.append(manager_match("p.project_code") if active_filters.get("include_history_manager") else "fin.account_manager LIKE :manager")
+        conditions.append(manager_match("fin.order_line_id") if active_filters.get("include_history_manager") else "fin.account_manager LIKE :manager")
         params["manager"] = f"%{active_filters['manager']}%"
 
     # Detail-level filters must constrain the current exported row. Filtering only

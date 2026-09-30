@@ -1,3 +1,5 @@
+import { OrderYearProvider, useOrderYear } from './components/OrderYearFilter';
+import { currentOrderYear, orderYearParams } from './lib/orderYear';
 import EditConflictDialog from './components/EditConflictDialog';
 import { accountApi, editingApi } from './api';
 import React, { useEffect, useState, useRef } from 'react';
@@ -227,6 +229,13 @@ function mapAuthUser(item: BackendAuthUser): AuthUser {
 }
 
 export default function App() {
+  return <OrderYearProvider><Application /></OrderYearProvider>;
+}
+
+function Application() {
+  const { year, setYear, setYears } = useOrderYear();
+  const loadAbort = useRef<AbortController | null>(null);
+  const [dataScope,setDataScope]=useState(year);
   const loadVersion = useRef(0);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia('(max-width: 767px)').matches);
@@ -247,6 +256,9 @@ export default function App() {
   const [loadProgress, setLoadProgress] = useState('');
 
   const clearSession = () => {
+    loadAbort.current?.abort();
+    setYear(currentOrderYear());
+    setYears([]);
     loadVersion.current += 1;
     window.localStorage.removeItem('erp_auth_token');
     api.setToken('');
@@ -265,8 +277,14 @@ export default function App() {
 
   async function loadBackendData(user = currentUser) {
     if (!user || user.mustChangePassword) return;
+    loadAbort.current?.abort();
+    const controller = new AbortController();
+    loadAbort.current = controller;
+    const scope = orderYearParams(year);
     const ticket = ++loadVersion.current;
-    const isCurrent = () => ticket === loadVersion.current;
+    const isCurrent = () => ticket === loadVersion.current && !controller.signal.aborted;
+    void accountApi.orderYears(controller.signal).then(result => { if (isCurrent()) setYears(result.years); }).catch(() => {});
+    setDataScope(year);
     setDataLoading(true);
     setLoadProgress('正在加载清单…');
     setDataLatestModified('');
@@ -277,27 +295,27 @@ export default function App() {
         if(ticket!==loadVersion.current)return;
         setLogs(data.items.map(mapLog));
       } else if (currentScreen === 'orders' && canOpenPage(user,'orders')) {
-        await loadAllPages(api.orders, page => {
+        await loadAllPages(params => api.orders({...params,...scope}, controller.signal), page => {
           setOrders(page.items.map(mapOrder));
           setLoadProgress(`基本信息已加载 ${page.items.length} / ${page.total} 条，正在完成加载…`);
         }, isCurrent);
       } else if (currentScreen === 'purchases' && canOpenPage(user,'purchases')) {
         const results = await Promise.allSettled([
-          loadAllPages(api.purchases, page => {
+          loadAllPages(params => api.purchases({...params,...scope}, controller.signal), page => {
             setPurchases(page.items.map(mapPurchase));
             setLoadProgress(`采购信息已加载 ${page.items.length} / ${page.total} 条，正在完成加载…`);
           }, isCurrent),
-          accountApi.orderOptions('purchases').then(options => { if (isCurrent()) setOrders(options.items.map(mapOrder)); }),
+          accountApi.orderOptions('purchases', scope, controller.signal).then(options => { if (isCurrent()) setOrders(options.items.map(mapOrder)); }),
         ]);
         const failure = results.find(result => result.status === 'rejected');
         if (failure?.status === 'rejected') throw failure.reason;
       } else if (currentScreen === 'sales' && canOpenPage(user,'sales')) {
         const results = await Promise.allSettled([
-          loadAllPages(api.sales, page => {
+          loadAllPages(params => api.sales({...params,...scope}, controller.signal), page => {
             setSales(page.items.map(mapSale));
             setLoadProgress(`销售信息已加载 ${page.items.length} / ${page.total} 条，正在完成加载…`);
           }, isCurrent),
-          accountApi.orderOptions('sales').then(options => { if (isCurrent()) setOrders(options.items.map(mapOrder)); }),
+          accountApi.orderOptions('sales', scope, controller.signal).then(options => { if (isCurrent()) setOrders(options.items.map(mapOrder)); }),
         ]);
         const failure = results.find(result => result.status === 'rejected');
         if (failure?.status === 'rejected') throw failure.reason;
@@ -323,8 +341,8 @@ export default function App() {
     }
     setOrders([]);setPurchases([]);setSales([]);
     void loadBackendData(currentUser);
-    return ()=>{loadVersion.current+=1;};
-  }, [currentScreen, currentUser]);
+    return ()=>{loadVersion.current+=1;loadAbort.current?.abort();};
+  }, [currentScreen, currentUser, year]);
 
   useEffect(() => {
     const navigate = () => {
@@ -672,23 +690,24 @@ export default function App() {
           )}
           {currentScreen === 'ledger' && canOpenPage(currentUser,'ledger') && <SummaryLedgerScreen user={currentUser} onNavigate={navigateFromSidebar}/>}
           {currentScreen === 'orders' && canOpenPage(currentUser,'orders') && (
-            <OrdersScreen
-              loading={dataLoading}
+            <div key={year}><OrdersScreen
+              loading={dataLoading || dataScope !== year}
               loadError={Boolean(error)}
-              orders={orders}
+              orders={dataScope === year ? orders : []}
               onAddOrder={handleAddOrder}
               onImportExcel={handleImportExcel}
               onUpdateOrder={handleUpdateOrder}
               onDeleteOrder={handleDeleteOrder}
               onBatchSaved={() => loadBackendData()}
               canEnterOrders={canEnterOrders}
+              canTransferOrders={hasPermission(currentUser, 'department_transfer')}
               canEditOrders={canEditOrders}
               canDeleteOrders={canDeleteOrders}
               canImportLedger={canImportLedger}
-            />
+            /></div>
           )}
-          {currentScreen === 'purchases' && canOpenPage(currentUser,'purchases') && <PurchasesScreen loading={dataLoading} loadError={Boolean(error)} purchases={purchases} orders={orders} canEnterPurchases={canEnterPurchases} canEditPurchases={canEditPurchases} canDeletePurchases={canDeletePurchases} onRefresh={loadBackendData} />}
-          {currentScreen === 'sales' && canOpenPage(currentUser,'sales') && <SalesScreen loading={dataLoading} loadError={Boolean(error)} sales={sales} orders={orders} canEnterSales={canEnterSales} canEditSales={canEditSales} canDeleteSales={canDeleteSales} onRefresh={loadBackendData} />}
+          {currentScreen === 'purchases' && canOpenPage(currentUser,'purchases') && <div key={year}><PurchasesScreen loading={dataLoading || dataScope !== year} loadError={Boolean(error)} purchases={dataScope === year ? purchases : []} orders={dataScope === year ? orders : []} canEnterPurchases={canEnterPurchases} canEditPurchases={canEditPurchases} canDeletePurchases={canDeletePurchases} onRefresh={loadBackendData} /></div>}
+          {currentScreen === 'sales' && canOpenPage(currentUser,'sales') && <div key={year}><SalesScreen loading={dataLoading || dataScope !== year} loadError={Boolean(error)} sales={dataScope === year ? sales : []} orders={dataScope === year ? orders : []} canEnterSales={canEnterSales} canEditSales={canEditSales} canDeleteSales={canDeleteSales} onRefresh={loadBackendData} /></div>}
           {currentScreen === 'maintenance' && canOpenPage(currentUser,'maintenance') && <MaintenanceScreen user={currentUser}/>}
           {currentScreen === 'accounts' && canOpenPage(currentUser,'accounts') && <AccountPermissionsScreen user={currentUser}/>}
           {currentScreen === 'logs' && canOpenPage(currentUser,'logs') && <LogsScreen/>}

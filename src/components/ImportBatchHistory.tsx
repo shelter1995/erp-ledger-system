@@ -23,7 +23,7 @@ export default function ImportBatchHistory({ onImported, onBusy }: { onImported:
     {items.map(item => <article key={item.id} className="rounded-xl border border-slate-200 p-4 space-y-2">
       <div className="flex flex-wrap justify-between gap-2"><strong className="break-all">{item.source_file_name}</strong><span className="text-sm">{item.status === 'reverted' ? '已撤销' : item.status === 'completed' ? '已完成' : item.status}</span></div>
       <p className="text-xs text-slate-500">批次 {item.id} · {item.imported_by_name || '原系统导入'} · {item.uploaded_at.replace('T', ' ')}</p>
-      <p className="text-sm">{item.success_rows} 条明细 · 订单金额 ¥{moneyText(item.summary.order_amount)}{item.summary_is_current && <span className="text-xs text-slate-500">（当前金额）</span>}</p>
+      <p className="text-sm">{item.success_rows} 条明细 · 订单金额 {moneyText(item.summary.order_amount)}{item.summary_is_current && <span className="text-xs text-slate-500">（当前金额）</span>}</p>
       <p className="text-xs break-all text-slate-500">{item.backup_file ? `系统备份 #${item.pre_import_backup_id}：${item.backup_file}` : '历史批次未关联备份；原有备份仍可在系统管理中查询。'}</p>
       <button disabled={busy} className="ui-button !text-blue-600" onClick={() => run(async () => { setDetail(await api.importBatch(item.id)); setConfirmation(''); })}>查看明细与撤销条件</button>
     </article>)}

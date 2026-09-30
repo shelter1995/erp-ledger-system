@@ -338,7 +338,7 @@ export default function LedgerScreen({
 
           {/* Account Manager */}
           <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center justify-between gap-2"><label className="text-xs font-medium text-slate-500">项目经理</label><label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={includeHistoryManager === 'true'} onChange={e => setIncludeHistoryManager(e.target.checked ? 'true' : '')} />包含历史负责人</label></div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><label className="text-xs font-medium text-slate-500">客户经理</label><label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={includeHistoryManager === 'true'} onChange={e => setIncludeHistoryManager(e.target.checked ? 'true' : '')} />包含历史负责人</label></div>
             <input 
               type="text" 
               placeholder="输入经理姓名"
@@ -499,19 +499,19 @@ export default function LedgerScreen({
               ) : (
                 paginatedLedgers.map((item) => (
                     <tr key={item.id} className="hover:bg-slate-50 transition-colors group">
-                      <td className="px-6 py-4 text-xs font-mono font-medium text-blue-600">{item.id}</td>
+                      <td className="px-6 py-4 text-xs font-mono font-normal text-blue-600">{item.id}</td>
                       <td className="px-6 py-4 text-xs text-slate-600 truncate" title={item.clientUnit}>{item.clientUnit}</td>
-                      <td className="px-6 py-4 text-xs font-medium text-slate-900 truncate" title={item.projectName}>{item.projectName}<small className="block text-slate-500">现任：{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && ` · 历史命中：${matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}`}</small></td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-950 font-medium">¥{formatMoney(item.orderAmount)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.purchaseAmount)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.deliveryValue || 0)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.deliveryCost || 0)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.totalReceived)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.totalPaid || 0)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.salesInvoiceAmount || 0)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">¥{formatMoney(item.receivedInvoiceAmount || 0)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-rose-600">¥{formatMoney(item.deliveryAccountsReceivable || 0)}</td>
-                      <td className="px-6 py-4 text-xs text-right font-mono text-rose-600">¥{formatMoney(item.invoiceAccountsReceivable || 0)}</td>
+                      <td className="px-6 py-4 text-xs font-normal text-slate-900 truncate" title={item.projectName}>{item.projectName}<small className="block text-slate-500">现任：{item.manager}{matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager) && ` · 历史命中：${matchedManagers(item, submittedFilters.manager, submittedFilters.includeHistoryManager)}`}</small></td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-950 font-normal">{formatMoney(item.orderAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.purchaseAmount)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.deliveryValue || 0)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.deliveryCost || 0)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.totalReceived)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.totalPaid || 0)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.salesInvoiceAmount || 0)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-slate-600">{formatMoney(item.receivedInvoiceAmount || 0)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-rose-600">{formatMoney(item.deliveryAccountsReceivable || 0)}</td>
+                      <td className="px-6 py-4 text-xs text-right font-mono text-rose-600">{formatMoney(item.invoiceAccountsReceivable || 0)}</td>
                       <td className="px-6 py-4 text-center">
                         <div className="inline-flex items-center justify-center gap-1">
                           <button
@@ -675,8 +675,8 @@ export default function LedgerScreen({
                     ['订单状态', normalizeLedgerStatusLabel(selectedLedger.orderStatus)],
                     ['订单数量', selectedLedger.orderId],
                     ['最近销售订单日期', selectedLedger.orderDate || '-'],
-                    ['销售订单金额', `¥${formatMoney(selectedLedger.orderAmount)}`],
-                    ['毛利润', `¥${formatMoney(differenceMoney(selectedLedger.orderAmount, selectedLedger.purchaseAmount))}`],
+                    ['销售订单金额', `${formatMoney(selectedLedger.orderAmount)}`],
+                    ['毛利润', `${formatMoney(differenceMoney(selectedLedger.orderAmount, selectedLedger.purchaseAmount))}`],
                   ].map(([label, value]) => (
                     <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                       <p className="text-[11px] font-medium text-slate-400">{label}</p>
@@ -698,7 +698,7 @@ export default function LedgerScreen({
                       <div key={label as string} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
                         <p className="text-[11px] font-medium text-slate-400">{label as string}</p>
                         <p className={`mt-1 text-xs font-bold font-mono ${color as string}`}>
-                          ¥{formatMoney(value as MoneyValue)}
+                          {formatMoney(value as MoneyValue)}
                         </p>
                       </div>
                     ))}

@@ -44,10 +44,17 @@ def _save(payload, user, department_id=None):
             conn.execute(text('UPDATE department SET name=:n,is_active=:a WHERE id=:id'), {'n': name, 'a': int(payload.is_active), 'id': department_id})
         if owner is None:
             conn.execute(text('INSERT INTO department_alias(name,department_id) VALUES(:n,:id)'), {'n': name, 'id': department_id})
-        # Membership/alias changes invalidate cached authority, including all-scope users.
-        conn.execute(text('UPDATE erp_user SET auth_version=auth_version+1 WHERE authorization_version=1'))
+        # New departments have no existing memberships. A no-op save must not
+        # invalidate sessions either. For real changes, refresh only accounts
+        # tied to this department; super admins remain able to manage the catalog.
+        if before is not None and (before['name'] != name or bool(before['is_active']) != payload.is_active):
+            conn.execute(text('''UPDATE erp_user SET auth_version=auth_version+1
+                WHERE authorization_version=1 AND account_type<>'super_admin'
+                  AND (home_department_id=:department_id OR id IN (
+                      SELECT user_id FROM user_department WHERE department_id=:department_id
+                  ))'''), {'department_id': department_id})
         write_operation_log(conn, user, '账号管理', 'update_department', f'维护部门“{name}”', before=before, after={'id': department_id, 'name': name, 'is_active': payload.is_active})
-    return {'message': '部门已保存，请重新登录以刷新权限范围'}
+    return {'message': '部门已保存'}
 
 
 @router.post('')

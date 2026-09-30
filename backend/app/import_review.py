@@ -115,6 +115,6 @@ def assert_batch_access(conn, batch, user):
     if user.account_type != 'super_admin' and batch['uploaded_by'] != user.id:
         raise HTTPException(404,'导入批次不存在或无权访问')
     for row in batch_lines(conn,batch['id']):
-        department = row['line_department'] if row['source_preserved'] else conn.execute(text('SELECT department FROM project WHERE id=:id'),{'id':row['project_id']}).scalar()
+        department = conn.execute(text('SELECT department FROM v_order_line_finance WHERE order_line_id=:id'), {'id':row['id']}).scalar()
         if not can_access_department(user,department):
             raise HTTPException(403,'该批次含无权查看的部门数据')

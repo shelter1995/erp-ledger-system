@@ -3,6 +3,7 @@ from collections import defaultdict
 from sqlalchemy import text, bindparam
 from .serializers import clean_rows
 from .edit_versions import read_context
+from .order_ownership import decode_history
 
 
 def order_match(column="order_line_id", *, project=False):
@@ -17,11 +18,19 @@ def order_match(column="order_line_id", *, project=False):
         WHERE hn.sales_order_id=hs.id AND hn.order_no LIKE :order_id)))"""
 
 
-def manager_match(column="project_code"):
-    return f"""{column} IN (SELECT hp.project_code FROM project hp
-      WHERE hp.deleted_at IS NULL AND (hp.account_manager LIKE :manager OR EXISTS (
-        SELECT 1 FROM project_manager_history hm
-        WHERE hm.project_id=hp.id AND hm.manager_name LIKE :manager)))"""
+def manager_match(column="order_line_id"):
+    # Aggregation prevents semijoin flattening into the large finance export:
+    # MySQL otherwise explores an excessive number of join orders.
+    return f"""{column} IN (SELECT hl.id FROM order_line hl
+      JOIN sales_order hs ON hs.id=hl.sales_order_id
+      JOIN project hp ON hp.id=hs.project_id
+      WHERE hl.deleted_at IS NULL AND hs.deleted_at IS NULL AND hp.deleted_at IS NULL
+      AND (CASE WHEN hs.ownership_overridden=1 THEN
+        (hs.account_manager LIKE :manager OR JSON_SEARCH(hs.manager_history, 'one', :manager, NULL, '$[*].manager_name') IS NOT NULL)
+      WHEN hl.source_preserved=1 THEN hl.line_account_manager LIKE :manager
+      ELSE (hp.account_manager LIKE :manager OR EXISTS (
+        SELECT 1 FROM project_manager_history hm WHERE hm.project_id=hp.id AND hm.manager_name LIKE :manager)) END)
+      GROUP BY hl.id HAVING COUNT(*) > 0)"""
 
 
 def enrich_history(conn, rows):
@@ -49,6 +58,11 @@ def enrich_history(conn, rows):
         for r in conn.execute(text('SELECT sales_order_id, order_no FROM sales_order_number_history WHERE sales_order_id IN :ids ORDER BY history_order')
                               .bindparams(bindparam('ids', expanding=True)), {'ids': list(set(line_orders.values()))}).mappings():
             numbers[r['sales_order_id']].append(r['order_no'])
+    order_managers = {}
+    if line_orders:
+        for order in conn.execute(text('SELECT id, manager_history FROM sales_order WHERE ownership_overridden=1 AND id IN :ids')
+                                  .bindparams(bindparam('ids', expanding=True)), {'ids':list(set(line_orders.values()))}).mappings():
+            order_managers[order['id']] = [h['manager_name'] for h in decode_history(order['manager_history'])]
     paths = source_order_paths(conn, line_ids)
     version_context=read_context(conn,ids)
     for r in items:
@@ -62,6 +76,8 @@ def enrich_history(conn, rows):
                 r['order_number_path'] = paths[r['order_line_id']]
             if r['order_line_id'] in source_lines:
                 r['manager_history'] = [r['account_manager']] if r.get('account_manager') else []
+            if r['sales_order_id'] in order_managers:
+                r['manager_history'] = order_managers[r['sales_order_id']]
     return items
 
 

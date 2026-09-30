@@ -634,7 +634,7 @@ export default function SystemScreen({
                   {users.map((user) => (
                     <tr key={user.id} className="text-xs text-slate-700">
                       <td className="px-4 py-2 font-mono text-blue-600">{user.username}</td>
-                      <td className="px-4 py-2 font-semibold">{user.display_name}</td>
+                      <td className="px-4 py-2 font-normal">{user.display_name}</td>
                       <td className="px-4 py-2">{permissionRoleLabel(userEffectivePermissions(user))}</td>
                       <td className="px-4 py-2">
                         {userEffectivePermissions(user).map((permission) => PERMISSION_LABELS[permission] || permission).join('、') || '无'}
@@ -723,7 +723,7 @@ export default function SystemScreen({
                 {inactiveUsers.map((user) => (
                   <tr key={user.id} className="text-xs text-slate-700">
                     <td className="px-4 py-3 font-mono text-slate-600">{user.username}</td>
-                    <td className="px-4 py-3 font-semibold">{user.display_name}</td>
+                    <td className="px-4 py-3 font-normal">{user.display_name}</td>
                     <td className="px-4 py-3">{permissionRoleLabel(userEffectivePermissions(user))}</td>
                     <td className="px-4 py-3">
                       {userEffectivePermissions(user)
@@ -1011,14 +1011,14 @@ export default function SystemScreen({
                 return (
                   <React.Fragment key={log.id}>
                     <tr className="hover:bg-slate-50/80 transition-colors">
-                      <td className="px-6 py-3.5 text-xs font-medium text-slate-700 flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center text-[10px] font-bold">
+                      <td className="px-6 py-3.5 text-xs font-normal text-slate-700 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center text-[10px] font-normal">
                           {log.user.charAt(0)}
                         </span>
                         <span>{log.user}</span>
                       </td>
                       <td className="px-6 py-3.5 text-xs">
-                        <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-100">
+                        <span className="inline-block px-2 py-0.5 rounded text-[10px] font-normal bg-blue-50 text-blue-700 border border-blue-100">
                           {log.module}
                         </span>
                       </td>
@@ -1038,7 +1038,7 @@ export default function SystemScreen({
                           >
                             <ChevronDown className={`mt-0.5 h-4 w-4 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
                             <span className="flex-1">{log.details}</span>
-                            <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                            <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-700">
                               {changedCellCount} 个单元格
                             </span>
                           </button>
@@ -1047,7 +1047,7 @@ export default function SystemScreen({
                         )}
                       </td>
                       <td className="px-6 py-3.5 text-xs text-center">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-normal ${
                           log.status === '成功'
                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
                             : log.status === '失败'
@@ -1148,7 +1148,7 @@ export default function SystemScreen({
             <tbody className="divide-y divide-slate-100">
               {paginatedBackups.map((bk) => (
                 <tr key={bk.id} className="hover:bg-slate-50/80 transition-colors">
-                  <td className="px-6 py-3.5 text-xs font-mono font-medium text-slate-800 flex items-center gap-2">
+                  <td className="px-6 py-3.5 text-xs font-mono font-normal text-slate-800 flex items-center gap-2">
                     <FileArchive className="w-4 h-4 text-slate-400 shrink-0" />
                     <span className="truncate">{bk.fileName}</span>
                   </td>

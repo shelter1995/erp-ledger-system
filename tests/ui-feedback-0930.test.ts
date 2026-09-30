@@ -30,7 +30,7 @@ test('four screens share manager filter, placeholders and correct date labels', 
   for (const [Screen, props] of entries) {
     const html = renderToStaticMarkup(React.createElement(Screen, props));
     assert.match(html, /包含历史负责人/);
-    assert.match(html, /placeholder="输入项目经理姓名"/);
+    assert.match(html, /placeholder="输入客户经理姓名"/);
     assert.match(html, /placeholder="输入采购厂商名称"/);
     assert.doesNotMatch(html, /请输入客户经理姓名/);
     if (Screen === OrdersScreen) assert.equal((html.match(/type="date"/g) || []).length, 2);
